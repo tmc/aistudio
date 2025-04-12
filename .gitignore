@@ -1,0 +1,9 @@
+# Build artifacts
+aistudio
+*~
+*.log
+aistudio-debug.log
+debug_audio.bin
+testdata/recordings/
+api/testdata/
+!testdata/script/

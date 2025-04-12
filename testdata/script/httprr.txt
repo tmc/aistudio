@@ -1,0 +1,21 @@
+# HTTP Record and Replay test
+env GEMINI_API_KEY=fake_test_key
+env HTTP_PROXY=
+
+# This test demonstrates HTTP recording and replay
+# When run with -httprecord flag, it will make real HTTP requests
+# On subsequent runs, it will use the recorded responses
+
+# First we build our test
+go build -o aistudio.exe ./example
+exists aistudio.exe
+
+# Run the app in non-interactive mode with a simple prompt
+exec ./aistudio.exe -non-interactive -p "Hello" -audio=false
+stdout .
+
+# Then verify it runs with our test API key
+! stderr 'Error initializing client'
+
+# Clean up
+rm aistudio.exe

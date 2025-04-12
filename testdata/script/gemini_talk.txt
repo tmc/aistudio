@@ -1,0 +1,14 @@
+# Test Gemini conversation
+env GEMINI_API_KEY=test_key
+
+# Build the example app
+go build -o aistudio.exe ./example
+exists aistudio.exe
+
+# Test non-interactive conversation - should return a greeting response
+# Note: This uses the recorded HTTP responses when not in record mode
+exec ./aistudio.exe --non-interactive -p "Hello, how are you today?"
+stdout 'Hello'
+
+# Clean up
+rm aistudio.exe
