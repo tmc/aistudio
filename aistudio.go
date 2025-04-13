@@ -2,8 +2,11 @@ package aistudio
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +19,14 @@ import (
 	"github.com/tmc/aistudio/audioplayer"
 	"github.com/tmc/aistudio/internal/helpers"
 	"github.com/tmc/aistudio/settings"
+)
+
+const (
+	initialBackoffDuration = 1 * time.Second
+	maxBackoffDuration     = 30 * time.Second
+	backoffFactor          = 1.8
+	jitterFactor           = 0.2 // +/- 20%
+	maxStreamRetries       = 5
 )
 
 // New creates a new Model instance with default settings and applies options.
@@ -78,11 +89,16 @@ func New(opts ...Option) *Model {
 		// History and tools default to disabled, enabled via options
 		historyEnabled: false,
 		enableTools:    false,
+
+		// Initialize retry state
+		currentStreamBackoff: initialBackoffDuration,
 	}
 
 	for _, opt := range opts {
 		if err := opt(m); err != nil {
 			log.Printf("Warning: Error applying option: %v", err)
+			fmt.Fprintf(os.Stderr, "Warning: Error applying option: %v\n", err)
+			time.Sleep(1 * time.Second)
 		}
 	}
 
@@ -131,6 +147,24 @@ func (m *Model) InitModel() (tea.Model, error) {
 	log.Printf("Show audio status: %t", m.showAudioStatus)
 	log.Printf("History enabled: %t", m.historyEnabled)
 	log.Printf("Tool calling enabled: %t", m.enableTools)
+
+	// Enhanced tools information
+	if m.enableTools && m.toolManager != nil {
+		toolCount := len(m.toolManager.RegisteredToolDefs)
+		log.Printf("Available tools: %d", toolCount)
+		log.Printf("Tools info: Press Ctrl+T to list all available tools")
+
+		// List the names of available tools
+		if toolCount > 0 {
+			toolNames := []string{}
+			for name, tool := range m.toolManager.RegisteredTools {
+				if tool.IsAvailable {
+					toolNames = append(toolNames, name)
+				}
+			}
+			log.Printf("Tool names: %s", strings.Join(toolNames, ", "))
+		}
+	}
 
 	return m, nil
 }
@@ -274,6 +308,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...) // Return early
 
+		case "ctrl+t": // Show available tools
+			if m.enableTools && m.toolManager != nil {
+				// Get list of available tools
+				toolsList := m.toolManager.ListAvailableTools()
+
+				// Display available tools
+				m.messages = append(m.messages, formatMessage("System", toolsList))
+				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.GotoBottom()
+			} else {
+				// Display a message about tools being disabled
+				m.messages = append(m.messages, formatMessage("System", "Tool calling is disabled. Enable with --tools flag."))
+				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.GotoBottom()
+			}
+			return m, tea.Batch(cmds...) // Return early
+
 		case "ctrl+v": // Toggle Video state
 			switch m.videoInputMode {
 			case VideoInputNone:
@@ -374,8 +425,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = m.messages[:len(m.messages)-1]
 		}
 		m.messages = append(m.messages, formatMessage("System", "Connected. You can start chatting."))
+		m.messages = append(m.messages, formatMessage("Info", fmt.Sprintf("%v tools available.", len(m.toolManager.RegisteredToolDefs))))
 		m.viewport.SetContent(m.formatAllMessages())
 		m.viewport.GotoBottom()
+		// Reset retry state on successful connection
+		m.streamRetryAttempt = 0
+		m.currentStreamBackoff = initialBackoffDuration
+		log.Println("Stream connection successful, retry counter reset.")
 		cmds = append(cmds, m.receiveStreamCmd()) // Start receiving
 
 	case bidiStreamReadyMsg: // stream.go
@@ -390,6 +446,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, formatMessage("System", "Connected with bidirectional stream. You can start chatting."))
 		m.viewport.SetContent(m.formatAllMessages())
 		m.viewport.GotoBottom()
+		// Reset retry state on successful connection
+		m.streamRetryAttempt = 0
+		m.currentStreamBackoff = initialBackoffDuration
+		log.Println("Bidirectional stream connection successful, retry counter reset.")
 		cmds = append(cmds, m.receiveBidiStreamCmd()) // Start receiving
 
 	case streamResponseMsg: // stream.go (One-way stream response)
@@ -402,6 +462,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				AudioData: msg.output.Audio, // Store complete audio
 				Timestamp: time.Now(),
 			}
+
+			if msg.output.FunctionCall != nil {
+				newMessage.IsToolCall = true
+
+				jsonArgs, err := msg.output.FunctionCall.Args.MarshalJSON()
+				if err != nil {
+					log.Printf("Error marshaling function call arguments: %v", err)
+					newMessage.Content = fmt.Sprintf("Error: %v", err)
+				}
+				newMessage.ToolCall = &ToolCall{
+					ID:        msg.output.FunctionCall.Id, // Use .Id from the protobuf definition
+					Name:      msg.output.FunctionCall.Name,
+					Arguments: json.RawMessage(jsonArgs),
+				}
+			}
+
 			m.messages = append(m.messages, newMessage)
 			idx := len(m.messages) - 1
 
@@ -447,6 +523,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.processingTool = false
 			}
+		}
+
+		// Handle executable code if present
+		if msg.output.ExecutableCode != nil {
+			log.Printf("Processing executable code for language: %s", msg.output.ExecutableCode.GetLanguage())
+
+			// Create and append an executable code message
+			execCodeMessage := formatExecutableCodeMessage(msg.output.ExecutableCode)
+			m.messages = append(m.messages, execCodeMessage)
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+			log.Printf("Added executable code message for language: %s", msg.output.ExecutableCode.GetLanguage())
+		}
+
+		// Handle executable code result if present
+		if msg.output.CodeExecutionResult != nil {
+			// Create and append an executable code result message
+			execResultMessage := formatExecutableCodeResultMessage(msg.output.CodeExecutionResult)
+			m.messages = append(m.messages, execResultMessage)
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
 		}
 
 		if msg.output.Text != "" || len(msg.output.Audio) > 0 {
@@ -528,15 +625,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamErrorMsg: // stream.go
 		m.receiving = false
 		m.streamReady = false
-		m.err = fmt.Errorf("stream error: %w", msg.err)
-		m.messages = append(m.messages, formatError(m.err))
-		m.viewport.SetContent(m.formatAllMessages())
-		m.viewport.GotoBottom()
-		m.stream = nil
+		m.stream = nil // Ensure streams are nil
 		m.bidiStream = nil
-		if m.streamCtxCancel != nil {
+		if m.streamCtxCancel != nil { // Cancel existing context if any
 			m.streamCtxCancel()
 			m.streamCtxCancel = nil
+		}
+
+		m.streamRetryAttempt++
+
+		if m.streamRetryAttempt > maxStreamRetries {
+			// Max retries reached
+			log.Printf("Stream error: Max retries (%d) reached. Giving up. Error: %v", maxStreamRetries, msg.err)
+			m.err = fmt.Errorf("stream failed after %d retries: %w", maxStreamRetries, msg.err)
+			m.messages = append(m.messages, formatError(m.err))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+			// Reset for potential future manual attempts
+			m.streamRetryAttempt = 0
+			m.currentStreamBackoff = initialBackoffDuration
+		} else {
+			// Calculate backoff with jitter
+			jitter := time.Duration(float64(m.currentStreamBackoff) * jitterFactor * (rand.Float64()*2 - 1)) // +/- jitterFactor
+			delay := m.currentStreamBackoff + jitter
+			if delay < 0 {
+				delay = 100 * time.Millisecond // Ensure delay is not negative
+			}
+
+			log.Printf("Stream error: Attempt %d/%d failed. Retrying in %v. Error: %v", m.streamRetryAttempt, maxStreamRetries, delay, msg.err)
+			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Connection error. Retrying in %v (attempt %d/%d)...", delay.Round(time.Second), m.streamRetryAttempt, maxStreamRetries)))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+
+			// Update backoff for the *next* attempt
+			m.currentStreamBackoff = time.Duration(float64(m.currentStreamBackoff) * backoffFactor)
+			if m.currentStreamBackoff > maxBackoffDuration {
+				m.currentStreamBackoff = maxBackoffDuration
+			}
+
+			// Schedule the retry
+			cmds = append(cmds, tea.Tick(delay, func(t time.Time) tea.Msg {
+				return initStreamMsg{} // Trigger reconnection attempt
+			}))
 		}
 
 	case streamClosedMsg: // stream.go
@@ -768,7 +898,7 @@ func (m Model) View() string {
 
 	// Give viewport some space
 	headerHeight := 2 // Minimal header height
-	footerHeight := 2 // Minimal footer (input + status)
+	footerHeight := 3 // Minimal footer (input + status)
 	vpHeight := m.height - headerHeight - footerHeight
 	m.viewport.Width = m.width
 	m.viewport.Height = max(10, vpHeight) // At least 5 lines for messages

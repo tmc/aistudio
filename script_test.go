@@ -2,6 +2,7 @@ package aistudio_test
 
 import (
 	"testing"
+
 	"github.com/tmc/aistudio/internal/testing/scripttest"
 )
 

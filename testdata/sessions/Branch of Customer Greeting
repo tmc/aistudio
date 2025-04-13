@@ -1,0 +1,59 @@
+{
+  "runSettings": {
+    "temperature": 1.0,
+    "model": "models/gemini-2.5-pro-preview-03-25",
+    "topP": 0.95,
+    "topK": 64,
+    "maxOutputTokens": 65536,
+    "safetySettings": [{
+      "category": "HARM_CATEGORY_HARASSMENT",
+      "threshold": "OFF"
+    }, {
+      "category": "HARM_CATEGORY_HATE_SPEECH",
+      "threshold": "OFF"
+    }, {
+      "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      "threshold": "OFF"
+    }, {
+      "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+      "threshold": "OFF"
+    }],
+    "responseMimeType": "text/plain",
+    "enableCodeExecution": false,
+    "enableEnhancedCivicAnswers": false,
+    "enableSearchAsATool": false,
+    "enableBrowseAsATool": false,
+    "enableAutoFunctionResponse": false
+  },
+  "systemInstruction": {
+  },
+  "chunkedPrompt": {
+    "chunks": [{
+      "text": "hello\n",
+      "role": "user",
+      "tokenCount": 3
+    }, {
+      "text": "Thinking Process:\n\n1.  **Identify the input:** The user said \"hello\".\n2.  **Recognize the intent:** This is a standard greeting. It\u0027s the start of a conversation.\n3.  **Determine the appropriate response:** A polite and engaging greeting is required.\n4.  **Formulate possible responses:**\n    *   \"Hello!\" (Simple, direct)\n    *   \"Hi there!\" (Slightly more informal)\n    *   \"Hello! How can I help you today?\" (Adds helpfulness, good for an assistant)\n    *   \"Hi! What can I do for you?\" (Similar to above, slightly more informal)\n    *   \"Hello there! Nice to hear from you.\" (Friendly, acknowledges the interaction)\n5.  **Select the best response:** \"Hello! How can I help you today?\" is a good balance of politeness, directness, and fulfilling the assistant\u0027s role. It acknowledges the greeting and immediately invites the user to state their purpose.\n6.  **Final Output:** \"Hello! How can I help you today?\"",
+      "role": "model",
+      "tokenCount": 238,
+      "isThought": true
+    }, {
+      "text": "Hello there! How can I help you today?",
+      "role": "model",
+      "finishReason": "STOP",
+      "tokenCount": 11
+    }, {
+      "text": "how are ya\n",
+      "role": "user",
+      "tokenCount": 5,
+      "branchParent": {
+        "promptId": "prompts/1ZeK8dXlIbLxGJoHydMmLr8fwc5kQP3Qn",
+        "displayName": "Customer Greeting"
+      }
+    }],
+    "pendingInputs": [{
+      "text": "",
+      "role": "user"
+    }]
+  }
+}

@@ -149,6 +149,51 @@ func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Add
 			finalMsg.WriteString(audioString)
 			finalMsg.WriteString("\n")
 		}
+	} else if msg.IsToolCall {
+		// For tool calls, show the content and a note about the tool
+		if cleanedContent != "" {
+			finalMsg.WriteString(cleanedContent)
+			finalMsg.WriteString("\n")
+		}
+		if msg.ToolCall != nil {
+			toolCallStr := fmt.Sprintf("Tool: %s", msg.ToolCall.Name) // Corrected field name
+			toolCallStr = toolCallStyle.Render(toolCallStr)
+			finalMsg.WriteString(toolCallStr)
+			finalMsg.WriteString("\n")
+		}
+	} else if msg.IsExecutableCode {
+		// For executable code, show content and the code block
+		codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // Blue for code
+		
+		if cleanedContent != "" {
+			finalMsg.WriteString(cleanedContent)
+			finalMsg.WriteString("\n")
+		}
+		if msg.ExecutableCode != nil {
+			languageInfo := fmt.Sprintf("```%s", msg.ExecutableCode.Language)
+			finalMsg.WriteString(codeStyle.Render(languageInfo))
+			finalMsg.WriteString("\n")
+			finalMsg.WriteString(msg.ExecutableCode.Code)
+			finalMsg.WriteString("\n")
+			finalMsg.WriteString(codeStyle.Render("```"))
+			finalMsg.WriteString("\n")
+		}
+	} else if msg.IsExecutableCodeResult {
+		// For executable code results, show content and result
+		if cleanedContent != "" {
+			finalMsg.WriteString(cleanedContent)
+			finalMsg.WriteString("\n")
+		}
+		if msg.ExecutableCodeResult != nil {
+			// Since we don't know the exact field access pattern, use a more general approach
+			outputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // Green for success
+			finalMsg.WriteString(outputStyle.Render("Code Execution Result:"))
+			finalMsg.WriteString("\n")
+			finalMsg.WriteString("```\n")
+			// Just show the output as-is, which should contain either the result or the error
+			finalMsg.WriteString(fmt.Sprintf("%v", msg.ExecutableCodeResult))
+			finalMsg.WriteString("\n```\n")
+		}
 	} else {
 		// For messages without audio
 		if cleanedContent != "" {
@@ -343,6 +388,9 @@ func (m Model) footerView() string {
 	if m.historyEnabled {
 		helpParts = append(helpParts, "Ctrl+H: Save History")
 	}
+	if m.enableTools {
+		helpParts = append(helpParts, "Ctrl+T: Tools")
+	}
 	helpParts = append(helpParts, "Ctrl+S: Settings")
 	helpParts = append(helpParts, "Tab: Navigate")
 	helpParts = append(helpParts, "Ctrl+C: Quit")
@@ -372,7 +420,17 @@ func (m Model) footerView() string {
 	textAreaView := m.textarea.View()
 
 	// Combine input area and status line
-	footer.WriteString(lipgloss.JoinVertical(lipgloss.Left, "", textAreaView, statusLine))
+	footerElements := []string{"", textAreaView, statusLine} // Start with empty line, text area, status line
+
+	// Prepend tools info only if tools are enabled
+	if m.enableTools && m.toolManager != nil {
+		toolsInfoView := fmt.Sprintf("Tools: %d available", len(m.toolManager.RegisteredToolDefs))
+		toolsInfoStyled := statusStyle.Render(toolsInfoView) // Use status style for consistency
+		// Insert tools info after the initial empty line for spacing
+		footerElements = append([]string{footerElements[0], toolsInfoStyled}, footerElements[1:]...)
+	}
+
+	footer.WriteString(lipgloss.JoinVertical(lipgloss.Left, footerElements...))
 
 	return footer.String()
 }

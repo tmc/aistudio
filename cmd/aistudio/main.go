@@ -11,9 +11,12 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"runtime/trace"
+	"sort"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tmc/aistudio" // Adjust import path if necessary
+	"github.com/tmc/aistudio/api"
 )
 
 // setupLogging directs log output to a file for easier debugging.
@@ -41,10 +44,20 @@ func main() {
 	playerCmdFlag := flag.String("player", "", "Override command for audio playback (e.g., 'ffplay ...'). Auto-detected if empty.")
 	apiKeyFlag := flag.String("api-key", "", "Gemini API Key (overrides GEMINI_API_KEY env var).")
 
-	// Profiling flags
-	cpuprofile := flag.String("cpuprofile", "", "Write cpu profile to `file`")
-	memprofile := flag.String("memprofile", "", "Write memory profile to `file`")
-	traceFile := flag.String("trace", "", "Write execution trace to `file`")
+	// New flags for history and tools
+	historyFlag := flag.Bool("history", true, "Enable chat history.")
+	historyDirFlag := flag.String("history-dir", "./history", "Directory for storing chat history.")
+	toolsFlag := flag.Bool("tools", true, "Enable tool calling support.")
+	toolsFileFlag := flag.String("tools-file", "", "JSON file containing tool definitions to load.")
+	systemPromptFlag := flag.String("system-prompt", "", "System prompt to use for the conversation.")
+	systemPromptFileFlag := flag.String("system-prompt-file", "", "Load system prompt from a file.")
+	listModelsFlag := flag.Bool("list-models", false, "List available models and exit.")
+	filterModelsFlag := flag.String("filter-models", "", "Filter models list (used with --list-models)")
+
+	// Profiling flags (all with pprof- prefix)
+	cpuprofile := flag.String("pprof-cpu", "", "Write cpu profile to `file`")
+	memprofile := flag.String("pprof-mem", "", "Write memory profile to `file`")
+	traceFile := flag.String("pprof-trace", "", "Write execution trace to `file`")
 	pprofServer := flag.String("pprof-server", "", "Enable pprof HTTP server on given address (e.g., 'localhost:6060')")
 
 	flag.Usage = func() {
@@ -54,9 +67,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nEnvironment Variables:\n")
 		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY: API Key (used if --api-key is not set).\n")
 		fmt.Fprintf(os.Stderr, "\nProfiling Examples:\n")
-		fmt.Fprintf(os.Stderr, "  CPU profile:    %s --cpuprofile=cpu.prof\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Memory profile: %s --memprofile=mem.prof\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Execution trace: %s --trace=trace.out\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  CPU profile:    %s --pprof-cpu=cpu.prof\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Memory profile: %s --pprof-mem=mem.prof\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Execution trace: %s --pprof-trace=trace.out\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  HTTP server:    %s --pprof-server=localhost:6060\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "                  # Then visit http://localhost:6060/debug/pprof/\n")
 	}
@@ -67,11 +80,49 @@ func main() {
 	if logFile != nil {
 		defer logFile.Close()
 		log.Println("--- Application Start ---")
-		log.Printf("CLI Flags: model=%q audio=%t voice=%q player=%q api-key-set=%t",
-			*modelFlag, *audioFlag, *voiceFlag, *playerCmdFlag, *apiKeyFlag != "")
+		log.Printf("CLI Flags: model=%q audio=%t voice=%q player=%q api-key-set=%t list-models=%t",
+			*modelFlag, *audioFlag, *voiceFlag, *playerCmdFlag, *apiKeyFlag != "", *listModelsFlag)
 	} else {
 		// Disable standard logger output if file logging failed, to avoid cluttering stderr
 		log.SetOutput(io.Discard)
+	}
+	
+	// Handle --list-models flag
+	if *listModelsFlag {
+		fmt.Println("Fetching available models...")
+		apiKey := *apiKeyFlag
+		if apiKey == "" {
+			apiKey = os.Getenv("GEMINI_API_KEY")
+			if apiKey == "" {
+				fmt.Fprintln(os.Stderr, "Warning: No API key provided for listing models. Some models might not be visible.")
+			}
+		}
+		
+		// Initialize a client and options just for listing models
+		client := &api.Client{
+			APIKey: apiKey,
+		}
+		
+		models, err := client.ListModels(*filterModelsFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing models: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Printf("Found %d models", len(models))
+		if *filterModelsFlag != "" {
+			fmt.Printf(" matching filter: %q", *filterModelsFlag)
+		}
+		fmt.Println()
+		fmt.Println("==========")
+		
+		// Sort and display models
+		sort.Strings(models)
+		for _, model := range models {
+			fmt.Println(model)
+		}
+		fmt.Println("==========")
+		os.Exit(0)
 	}
 
 	// CPU profiling
@@ -85,7 +136,7 @@ func main() {
 			log.Fatalf("Could not start CPU profile: %v", err)
 		}
 		defer pprof.StopCPUProfile()
-		log.Println("CPU profiling enabled, writing to %s", *cpuprofile)
+		log.Printf("CPU profiling enabled, writing to %s", *cpuprofile)
 	}
 
 	// Execution tracing
@@ -99,15 +150,15 @@ func main() {
 			log.Fatalf("Could not start trace: %v", err)
 		}
 		defer trace.Stop()
-		log.Println("Execution tracing enabled, writing to %s", *traceFile)
+		log.Printf("Execution tracing enabled, writing to %s", *traceFile)
 	}
 
 	// HTTP server for pprof
 	if *pprofServer != "" {
 		// Start a server in a separate goroutine
 		go func() {
-			log.Println("Starting pprof HTTP server on %s", *pprofServer)
-			log.Println("Visit http://%s/debug/pprof/ to access profiles", *pprofServer)
+			log.Printf("Starting pprof HTTP server on %s", *pprofServer)
+			log.Printf("Visit http://%s/debug/pprof/ to access profiles", *pprofServer)
 
 			// Start the server and log any errors
 			if err := http.ListenAndServe(*pprofServer, nil); err != nil {
@@ -132,12 +183,39 @@ func main() {
 		log.Println("Using API Key from --api-key flag.")
 	}
 
+	// Load system prompt from file if specified
+	systemPrompt := *systemPromptFlag
+	if *systemPromptFileFlag != "" {
+		data, err := os.ReadFile(*systemPromptFileFlag)
+		if err != nil {
+			log.Printf("Warning: Failed to read system prompt file: %v", err)
+			fmt.Fprintf(os.Stderr, "Warning: Failed to read system prompt file: %v\n", err)
+			time.Sleep(2 * time.Second) // Pause for 2 seconds before continuing
+		} else {
+			systemPrompt = string(data)
+			log.Printf("Loaded system prompt from file: %s", *systemPromptFileFlag)
+		}
+	}
+
 	// Construct component options
 	opts := []aistudio.Option{
 		aistudio.WithAPIKey(apiKey), // Pass determined key (or "" for ADC)
 		aistudio.WithModel(*modelFlag),
 		aistudio.WithAudioOutput(*audioFlag, *voiceFlag),
+		aistudio.WithHistory(*historyFlag, *historyDirFlag),
+		aistudio.WithTools(*toolsFlag),
 	}
+
+	// Add system prompt if specified
+	if systemPrompt != "" {
+		opts = append(opts, aistudio.WithSystemPrompt(systemPrompt))
+	}
+
+	// Add tools file if specified
+	if *toolsFileFlag != "" {
+		opts = append(opts, aistudio.WithToolsFile(*toolsFileFlag))
+	}
+
 	if *playerCmdFlag != "" {
 		opts = append(opts, aistudio.WithAudioPlayerCommand(*playerCmdFlag))
 	}

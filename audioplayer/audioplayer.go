@@ -116,7 +116,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.StartTime = time.Now()
 			return m, tickCmd()
 		}
-	
+
 	case PauseMsg:
 		if m.State == Playing {
 			m.State = Paused
@@ -129,7 +129,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.StartTime = time.Now().Add(-time.Duration(m.ElapsedTime * float64(time.Second)))
 			return m, tickCmd()
 		}
-	
+
 	case StopMsg:
 		m.State = Ended
 		m.ElapsedTime = m.TotalTime
@@ -143,7 +143,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if m.State == Playing {
 			if m.TotalTime > 0 && !m.StartTime.IsZero() {
 				m.ElapsedTime = time.Since(m.StartTime).Seconds()
-				
+
 				// Check if the audio has finished
 				if m.ElapsedTime >= m.TotalTime {
 					m.ElapsedTime = m.TotalTime
@@ -153,7 +153,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					}
 				}
 			}
-			
+
 			// We use tickMsg just to make the compiler happy
 			_ = tickMsg
 			return m, tickCmd()
@@ -187,7 +187,7 @@ func (m Model) View() string {
 
 	// Calculate progress bar
 	progressBar := strings.Repeat("╌", m.Width) // Default empty bar
-	
+
 	if m.State == Playing || m.State == Paused || m.State == Ended {
 		progress := 0.0
 		if m.TotalTime > 0 {
@@ -218,7 +218,7 @@ func (m Model) View() string {
 	audioLine.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(timestampStr))
 	audioLine.WriteString(" ")
 	audioLine.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Render(progressBar))
-	
+
 	if helpText != "" {
 		audioLine.WriteString(" ")
 		audioLine.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Render(helpText))
@@ -243,13 +243,13 @@ func (m *Model) Play() tea.Cmd {
 		m.State = Ready
 		m.ElapsedTime = 0
 	}
-	
+
 	if m.State == Ready {
 		m.State = Playing
 		m.StartTime = time.Now()
 		return tickCmd()
 	}
-	
+
 	return nil
 }
 
@@ -319,7 +319,7 @@ func formatDuration(seconds float64) string {
 	if seconds < 0 {
 		seconds = 0
 	}
-	
+
 	minutes := int(seconds) / 60
 	remainingSeconds := int(seconds) % 60
 	return fmt.Sprintf("%02d:%02d", minutes, remainingSeconds)

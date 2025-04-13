@@ -1,6 +1,11 @@
 package aistudio
 
-import "github.com/tmc/aistudio/api"
+import (
+	"fmt"
+	"log"
+
+	"github.com/tmc/aistudio/api"
+)
 
 // WithAPIKey sets the Google API Key for the client.
 func WithAPIKey(key string) Option {
@@ -92,6 +97,79 @@ func WithAudioStatus(show bool) Option {
 func WithBidiStream(enable bool) Option {
 	return func(m *Model) error {
 		m.useBidi = enable
+		return nil
+	}
+}
+
+// WithHistory enables chat history and specifies the directory for storing history files.
+// If the directory doesn't exist, it will be created.
+func WithHistory(enabled bool, historyDir string) Option {
+	return func(m *Model) error {
+		m.historyEnabled = enabled
+		if !enabled {
+			return nil
+		}
+
+		// Initialize history manager
+		historyManager, err := NewHistoryManager(historyDir)
+		if err != nil {
+			return fmt.Errorf("failed to initialize history manager: %w", err)
+		}
+
+		// Set manager and load available sessions
+		m.historyManager = historyManager
+		if err := m.historyManager.LoadSessions(); err != nil {
+			log.Printf("Warning: Failed to load history sessions: %v", err)
+		}
+
+		// Create initial session
+		m.historyManager.NewSession("New Chat", m.modelName)
+		return nil
+	}
+}
+
+// WithTools enables or disables tool calling support.
+func WithTools(enabled bool) Option {
+	return func(m *Model) error {
+		m.enableTools = enabled
+		if enabled {
+			m.toolManager = NewToolManager()
+		}
+		return nil
+	}
+}
+
+// WithToolsFile loads tools from a JSON file.
+func WithToolsFile(filePath string) Option {
+	return func(m *Model) error {
+		if !m.enableTools {
+			log.Println("Warning: Tools are disabled, but a tools file was specified. Enable tools with -tools flag.")
+			return nil
+		}
+
+		if filePath == "" {
+			return nil
+		}
+
+		if m.toolManager == nil {
+			// Initialize tool manager if not already done
+			m.toolManager = NewToolManager()
+		}
+
+		err := LoadToolsFromFile(filePath, m.toolManager)
+		if err != nil {
+			return fmt.Errorf("failed to load tools from file: %w", err)
+		}
+
+		log.Printf("Loaded tools from file: %s", filePath)
+		return nil
+	}
+}
+
+// WithSystemPrompt sets a system prompt for the conversation.
+func WithSystemPrompt(prompt string) Option {
+	return func(m *Model) error {
+		m.systemPrompt = prompt
 		return nil
 	}
 }
