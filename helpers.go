@@ -1,7 +1,6 @@
 package aistudio
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -11,35 +10,6 @@ import (
 	"strings"
 	"time"
 )
-
-// createWavHeader creates a simple WAV header for the given parameters
-func createWavHeader(dataSize, numChannels, sampleRate, bitsPerSample int) []byte {
-	header := make([]byte, 44)
-	totalSize := uint32(dataSize + 36) // 36 = bytes remaining after ChunkSize field
-	byteRate := uint32(sampleRate * numChannels * bitsPerSample / 8)
-	blockAlign := uint16(numChannels * bitsPerSample / 8)
-
-	// RIFF Header
-	copy(header[0:4], []byte("RIFF"))
-	binary.LittleEndian.PutUint32(header[4:8], totalSize)
-	copy(header[8:12], []byte("WAVE"))
-
-	// Format Subchunk
-	copy(header[12:16], []byte("fmt "))
-	binary.LittleEndian.PutUint32(header[16:20], 16) // Subchunk1Size for PCM
-	binary.LittleEndian.PutUint16(header[20:22], 1)  // AudioFormat 1 for PCM
-	binary.LittleEndian.PutUint16(header[22:24], uint16(numChannels))
-	binary.LittleEndian.PutUint32(header[24:28], uint32(sampleRate))
-	binary.LittleEndian.PutUint32(header[28:32], byteRate)
-	binary.LittleEndian.PutUint16(header[32:34], blockAlign)
-	binary.LittleEndian.PutUint16(header[34:36], uint16(bitsPerSample))
-
-	// Data Subchunk
-	copy(header[36:40], []byte("data"))
-	binary.LittleEndian.PutUint32(header[40:44], uint32(dataSize))
-
-	return header
-}
 
 // formatMessage creates a Message from sender and content
 func formatMessage(sender, content string) Message {
