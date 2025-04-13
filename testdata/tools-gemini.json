@@ -1,0 +1,41 @@
+{
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "search_weather",
+          "description": "Get weather information for a location",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "The city and state, e.g. San Francisco, CA"
+              },
+              "unit": {
+                "type": "string",
+                "enum": ["celsius", "fahrenheit"],
+                "description": "The unit of temperature"
+              }
+            },
+            "required": ["location"]
+          }
+        },
+        {
+          "name": "calculate",
+          "description": "Perform a calculation",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string",
+                "description": "The mathematical expression to evaluate"
+              }
+            },
+            "required": ["expression"]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -45,6 +45,31 @@ type bidiStreamResponseMsg struct {
 	output api.StreamOutput
 }
 
+// formatExecutableCodeMessage creates a Message from an ExecutableCode response
+func formatExecutableCodeMessage(execCode *generativelanguagepb.ExecutableCode) Message {
+	return Message{
+		Sender:           "Gemini",
+		Content:          fmt.Sprintf("Executable %s code:", execCode.GetLanguage()),
+		IsExecutableCode: true,
+		ExecutableCode: &ExecutableCode{
+			Language: fmt.Sprint(execCode.GetLanguage()),
+			Code:     execCode.GetCode(),
+		},
+		Timestamp: time.Now(),
+	}
+}
+
+// formatExecutableCodeResultMessage creates a Message from an ExecutableCodeResult response
+func formatExecutableCodeResultMessage(execResult *generativelanguagepb.CodeExecutionResult) Message {
+	return Message{
+		Sender:                 "System",
+		Content:                "Code Execution Result:",
+		IsExecutableCodeResult: true,
+		ExecutableCodeResult:   execResult,
+		Timestamp:              time.Now(),
+	}
+}
+
 // --- Stream Commands ---
 
 // initStreamCmd returns a command that initializes a stream.
@@ -60,9 +85,30 @@ func (m *Model) initStreamCmd() tea.Cmd {
 		m.streamCtx, m.streamCtxCancel = context.WithCancel(context.Background())
 
 		clientConfig := api.ClientConfig{
-			ModelName:   m.modelName,
-			EnableAudio: m.enableAudio, // Pass audio preference
-			VoiceName:   m.voiceName,   // Pass voice name
+			ModelName:    m.modelName,
+			EnableAudio:  m.enableAudio,  // Pass audio preference
+			VoiceName:    m.voiceName,    // Pass voice name
+			SystemPrompt: m.systemPrompt, // Pass system prompt
+		}
+
+		if m.enableTools && m.toolManager != nil {
+			// Log tools being sent to the API
+			toolCount := len(m.toolManager.RegisteredToolDefs)
+			if toolCount > 0 {
+				log.Printf("Sending %d registered tools to API", toolCount)
+			}
+
+			// Convert registered tools to the format expected by the client config
+			var apiToolDefs []*api.ToolDefinition
+			for name, registeredTool := range m.toolManager.RegisteredTools {
+				if registeredTool.IsAvailable {
+					log.Printf("Adding tool definition for API: %s", name)
+					// Make a copy to ensure we have a stable pointer
+					defCopy := registeredTool.ToolDefinition
+					apiToolDefs = append(apiToolDefs, &defCopy)
+				}
+			}
+			clientConfig.ToolDefinitions = m.toolManager.RegisteredToolDefs[:]
 		}
 
 		if err := m.client.InitClient(m.streamCtx); err != nil {
@@ -138,6 +184,12 @@ func (m *Model) receiveBidiStreamCmd() tea.Cmd {
 		}
 
 		output := api.ExtractBidiOutput(resp)
+		
+		// Check if there's a function call in the output that needs to be processed
+		if output.FunctionCall != nil {
+			log.Printf("Detected function call in bidi response: %s", output.FunctionCall.Name)
+		}
+		
 		return bidiStreamResponseMsg{output: output}
 	}
 }
@@ -167,21 +219,39 @@ func (m *Model) sendToStreamCmd(text string) tea.Cmd {
 
 		log.Printf("Sending new message to %s via StreamGenerateContent: %s", m.modelName, text)
 
-		// Create a new request with the user's message
-		request := &generativelanguagepb.GenerateContentRequest{
-			Model: m.modelName,
-			Contents: []*generativelanguagepb.Content{
-				{
-					Parts: []*generativelanguagepb.Part{
-						{
-							Data: &generativelanguagepb.Part_Text{
-								Text: text,
-							},
+		// Create content parts
+		contents := []*generativelanguagepb.Content{}
+
+		// Add system prompt if defined
+		if m.systemPrompt != "" {
+			contents = append(contents, &generativelanguagepb.Content{
+				Parts: []*generativelanguagepb.Part{
+					{
+						Data: &generativelanguagepb.Part_Text{
+							Text: m.systemPrompt,
 						},
 					},
-					Role: "user",
+				},
+				Role: "system",
+			})
+		}
+
+		// Add user message
+		contents = append(contents, &generativelanguagepb.Content{
+			Parts: []*generativelanguagepb.Part{
+				{
+					Data: &generativelanguagepb.Part_Text{
+						Text: text,
+					},
 				},
 			},
+			Role: "user",
+		})
+
+		// Create the request
+		request := &generativelanguagepb.GenerateContentRequest{
+			Model:    m.modelName,
+			Contents: contents,
 		}
 
 		// Start a new stream with the request
@@ -203,6 +273,29 @@ func (m *Model) sendToBidiStreamCmd(text string) tea.Cmd {
 		if m.bidiStream == nil {
 			log.Println("sendToBidiStreamCmd: Bidi stream is nil, cannot send message")
 			return sendErrorMsg{err: errors.New("bidirectional stream not initialized")}
+		}
+
+		// Stop any currently playing audio
+		if m.isAudioProcessing && m.enableAudio {
+			log.Println("Stopping current audio playback before sending new message")
+			
+			// Clear audio buffer to stop ongoing accumulation
+			m.consolidatedAudioData = nil
+			if m.bufferTimer != nil {
+				m.bufferTimer.Stop()
+				m.bufferTimer = nil
+			}
+			
+			// The existing audio channel might contain pending chunks
+			// We don't want to drain it as that could block, but we can
+			// set a flag to indicate that audio processing should stop
+			if m.currentAudio != nil {
+				m.currentAudio.IsComplete = true
+				m.currentAudio = nil
+			}
+			
+			// Mark that we're no longer processing audio
+			m.isAudioProcessing = false
 		}
 
 		// Send to existing bidirectional stream

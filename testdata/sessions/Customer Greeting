@@ -1,0 +1,76 @@
+{
+  "runSettings": {
+    "temperature": 1.0,
+    "model": "models/gemini-2.5-pro-preview-03-25",
+    "topP": 0.95,
+    "topK": 64,
+    "maxOutputTokens": 65536,
+    "safetySettings": [{
+      "category": "HARM_CATEGORY_HARASSMENT",
+      "threshold": "OFF"
+    }, {
+      "category": "HARM_CATEGORY_HATE_SPEECH",
+      "threshold": "OFF"
+    }, {
+      "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      "threshold": "OFF"
+    }, {
+      "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+      "threshold": "OFF"
+    }],
+    "responseMimeType": "text/plain",
+    "enableCodeExecution": false,
+    "functionDeclarations": [{
+      "name": "getWeather",
+      "description": "gets the weather for a requested city",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "city": {
+            "type": "STRING"
+          }
+        }
+      }
+    }],
+    "enableEnhancedCivicAnswers": false,
+    "enableSearchAsATool": false,
+    "enableBrowseAsATool": false,
+    "enableAutoFunctionResponse": false
+  },
+  "systemInstruction": {
+  },
+  "chunkedPrompt": {
+    "chunks": [{
+      "text": "hello\n",
+      "role": "user",
+      "tokenCount": 3
+    }, {
+      "text": "Thinking Process:\n\n1.  **Identify the input:** The user said \"hello\".\n2.  **Recognize the intent:** This is a standard greeting. It\u0027s the start of a conversation.\n3.  **Determine the appropriate response:** A polite and engaging greeting is required.\n4.  **Formulate possible responses:**\n    *   \"Hello!\" (Simple, direct)\n    *   \"Hi there!\" (Slightly more informal)\n    *   \"Hello! How can I help you today?\" (Adds helpfulness, good for an assistant)\n    *   \"Hi! What can I do for you?\" (Similar to above, slightly more informal)\n    *   \"Hello there! Nice to hear from you.\" (Friendly, acknowledges the interaction)\n5.  **Select the best response:** \"Hello! How can I help you today?\" is a good balance of politeness, directness, and fulfilling the assistant\u0027s role. It acknowledges the greeting and immediately invites the user to state their purpose.\n6.  **Final Output:** \"Hello! How can I help you today?\"",
+      "role": "model",
+      "tokenCount": 238,
+      "isThought": true
+    }, {
+      "text": "Hello there! How can I help you today?",
+      "role": "model",
+      "finishReason": "STOP",
+      "tokenCount": 11
+    }, {
+      "text": "how are ya\n",
+      "role": "user",
+      "tokenCount": 5,
+      "branchChildren": [{
+        "promptId": "prompts/1AcdlCdwIcEHsU1dwn0Mt6ty2LRyhTXL1",
+        "displayName": "Branch of Customer Greeting"
+      }]
+    }, {
+      "text": "Thinking Process:\n\n1.  **Identify the user\u0027s input:** The user asked \"how are ya\". This is a standard social greeting, asking about my well-being.\n2.  **Recognize my nature:** I am an AI, a large language model. I don\u0027t have feelings, a physical body, or personal experiences like humans do. Therefore, I cannot \"feel\" good, bad, tired, etc., in the human sense.\n3.  **Formulate an appropriate response:**\n    *   Acknowledge the user\u0027s question politely.\n    *   State my status as an AI.\n    *   Explain that I don\u0027t have feelings in the human way.\n    *   Describe my \"state\" in AI terms: functional, operational, ready to assist.\n    *   Optionally, turn the focus back to the user, showing engagement.\n4.  **Draft potential responses:**\n    *   \"I\u0027m an AI, so I don",
+      "role": "model",
+      "tokenCount": 211,
+      "isThought": true
+    }],
+    "pendingInputs": [{
+      "text": "",
+      "role": "user"
+    }]
+  }
+}

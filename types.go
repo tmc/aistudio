@@ -56,14 +56,32 @@ type AudioChunk struct {
 	MessageIndex int       // Index of the message this chunk belongs to (-1 if not applicable)
 }
 
+// ExecutableCode represents code that can be executed
+type ExecutableCode struct {
+	Language string
+	Code     string
+}
+
+// ExecutableCodeResult represents the result of executing code
+type ExecutableCodeResult = generativelanguagepb.CodeExecutionResult
+
 // Message represents a chat message with optional audio data
 type Message struct {
-	Sender    string    // Who sent the message (You, Gemini, System)
-	Content   string    // The message text
-	HasAudio  bool      // Whether the message has associated audio
-	AudioData []byte    // The raw audio data (if HasAudio is true) - stores the *complete* audio after consolidation
-	IsPlaying bool      // Whether the audio is currently playing
-	IsPlayed  bool      // Whether the audio has been played
+	Sender    string // Who sent the message (You, Gemini, System)
+	Content   string // The message text
+	HasAudio  bool   // Whether the message has associated audio
+	AudioData []byte // The raw audio data (if HasAudio is true) - stores the *complete* audio after consolidation
+	IsPlaying bool   // Whether the audio is currently playing
+	IsPlayed  bool   // Whether the audio has been played
+
+	IsToolCall bool      // Whether this message is a tool call
+	ToolCall   *ToolCall // The tool call associated with this message (if any)
+
+	IsExecutableCode       bool                  // Whether this message contains executable code
+	ExecutableCode         *ExecutableCode       // The executable code associated with this message (if any)
+	IsExecutableCodeResult bool                  // Whether this message contains executable code result
+	ExecutableCodeResult   *ExecutableCodeResult // The executable code result associated with this message (if any)
+
 	Timestamp time.Time // When the message was sent
 }
 
@@ -104,8 +122,10 @@ type Model struct {
 	quitting    bool
 
 	// Stream management
-	streamCtx       context.Context
-	streamCtxCancel context.CancelFunc
+	streamCtx            context.Context
+	streamCtxCancel      context.CancelFunc
+	streamRetryAttempt   int           // Tracks the current retry attempt number
+	currentStreamBackoff time.Duration // Tracks the current backoff duration
 
 	// Configuration
 	modelName   string
@@ -156,6 +176,19 @@ type Model struct {
 	// Focus management
 	focusedComponent  string // One of "input", "viewport", "settings"
 	showSettingsPanel bool   // Whether to show the settings panel
+
+	// History management
+	historyManager *HistoryManager // Manages chat history
+	historyEnabled bool            // Whether history is enabled
+
+	// Tool calling support
+	enableTools    bool         // Whether tool calling is enabled
+	toolManager    *ToolManager // Tool manager for handling tools
+	activeToolCall *ToolCall    // Currently active tool call, if any
+	processingTool bool         // Whether a tool call is being processed
+
+	// System prompt
+	systemPrompt string // System prompt to use for the conversation
 }
 
 // Option defines a functional option for configuring the Model.
