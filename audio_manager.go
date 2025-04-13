@@ -115,7 +115,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 					sizeThreshold, messageIdx)
 			}
 		}
-		
+
 		if isActivePlayback {
 			// Use a smaller threshold for chunks of the same message that's playing
 			sizeThreshold = continuousPlaybackBufferSize
@@ -203,7 +203,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 					sizeThreshold, messageIdx)
 			}
 		}
-		
+
 		if isActivePlayback {
 			// Use a smaller threshold for chunks of the same message that's playing
 			sizeThreshold = continuousPlaybackBufferSize
