@@ -1,9 +1,6 @@
 package aistudio
 
 import (
-	"log"
-	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -67,17 +64,3 @@ var (
 	audioPlayedIcon = audioIconStyle.Foreground(lipgloss.Color("8")).Render("✓")
 	audioReadyIcon  = audioIconStyle.Foreground(lipgloss.Color("5")).Render("🔊")
 )
-
-// --- Audio Tracing ---
-var audioTraceEnabled int32 // Use atomic for safe check across goroutines
-
-func init() {
-	if os.Getenv("AISTUDIO_AUDIO_TRACE") == "1" {
-		atomic.StoreInt32(&audioTraceEnabled, 1)
-		log.Println("--- Detailed audio pipeline tracing enabled (AISTUDIO_AUDIO_TRACE=1) ---")
-	}
-}
-
-func isAudioTraceEnabled() bool {
-	return atomic.LoadInt32(&audioTraceEnabled) == 1
-}

@@ -117,19 +117,19 @@ func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Add
 	if msg.HasAudio && msg.Sender == "Gemini" {
 		// Get just the audio UI line without any wrapping newlines
 		audioString := strings.TrimSpace(audioLine.String())
-		
+
 		// For Gemini messages with audio, place the content and audio inline
 		if cleanedContent != "" {
 			// Add the message text
 			finalMsg.WriteString(cleanedContent)
-			
+
 			// Add the audio controls on the same line as the content
 			if audioString != "" {
 				// Add a space between content and audio controls
 				finalMsg.WriteString(" ")
 				finalMsg.WriteString(audioString)
 			}
-			
+
 			finalMsg.WriteString("\n") // Just one newline after the combined content
 		} else if audioString != "" {
 			// If there's no content, just show the audio controls
@@ -139,12 +139,12 @@ func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Add
 	} else if msg.HasAudio {
 		// For other senders with audio, keep them separate
 		audioString := strings.TrimSpace(audioLine.String())
-		
+
 		if cleanedContent != "" {
 			finalMsg.WriteString(cleanedContent)
 			finalMsg.WriteString("\n")
 		}
-		
+
 		if audioString != "" {
 			finalMsg.WriteString(audioString)
 			finalMsg.WriteString("\n")
@@ -213,6 +213,14 @@ func (m Model) headerView() string {
 		modelInfo += " [BidiStream]"
 	} else {
 		modelInfo += " [Stream]"
+	}
+
+	// Add history and tool indicators
+	if m.historyEnabled {
+		modelInfo += " [History]"
+	}
+	if m.enableTools {
+		modelInfo += " [Tools]"
 	}
 
 	// Render title centered within available width
@@ -290,13 +298,14 @@ func (m Model) footerView() string {
 
 	// --- Input Area and Status Line ---
 
-	// Input mode indicator
+	// Input mode indicator (Mic or Video)
 	var inputMode string
 	if m.micActive {
-		inputMode = inputModeStyle.Render("[Mic ON]")
+		inputMode = inputModeStyle.Render("[Mic ON]") // Display Mic status if active
 	} else if m.videoInputMode != VideoInputNone {
-		inputMode = inputModeStyle.Render(fmt.Sprintf("[%s ON]", m.videoInputMode))
+		inputMode = inputModeStyle.Render(fmt.Sprintf("[%s ON]", m.videoInputMode)) // Display Video status if active
 	}
+	// If neither is active, inputMode remains an empty string
 
 	// Status indicator
 	var status string
@@ -329,7 +338,15 @@ func (m Model) footerView() string {
 	}
 
 	// Help text
-	help := statusStyle.Render("Ctrl+M: Mic | Ctrl+S: Settings | Tab: Navigate | Ctrl+C: Quit")
+	var helpParts []string
+	helpParts = append(helpParts, "Ctrl+M: Mic")
+	if m.historyEnabled {
+		helpParts = append(helpParts, "Ctrl+H: Save History")
+	}
+	helpParts = append(helpParts, "Ctrl+S: Settings")
+	helpParts = append(helpParts, "Tab: Navigate")
+	helpParts = append(helpParts, "Ctrl+C: Quit")
+	help := statusStyle.Render(strings.Join(helpParts, " | "))
 
 	// Layout status line elements
 	statusWidth := lipgloss.Width(status)

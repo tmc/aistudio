@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tmc/aistudio/internal/helpers"
 )
 
 // Audio buffering window values, thresholds are defined in constants.go
@@ -43,7 +44,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 		// --- Start a new buffer ---
 		var prevCmd tea.Cmd
 		if len(m.consolidatedAudioData) > 0 && m.bufferMessageIdx >= 0 { // Flush previous if exists
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Consolidate: Flushing previous buffer for msg #%d before starting new for #%d",
 					m.bufferMessageIdx, messageIdx)
 			}
@@ -51,7 +52,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 		}
 
 		// Initialize new buffer state
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Buffer Start: New buffer for Msg #%d at %s. Chunk=%d bytes, Window=%v",
 				messageIdx, chunkReceiveTime.Format(time.RFC3339Nano), chunkSize, m.currentBufferWindow)
 		}
@@ -64,7 +65,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 		bufferWindow := m.currentBufferWindow
 		if isActivePlayback {
 			bufferWindow = sameMessageBufferWindow
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Priority: Using shorter window %v for active playback of Msg #%d",
 					bufferWindow, messageIdx)
 			}
@@ -74,20 +75,20 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 			m.bufferTimer.Stop()
 		}
 		flushTime := chunkReceiveTime.Add(bufferWindow)
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Buffer Timer: Setting timeout for %s (at %s) for Msg #%d",
 				bufferWindow, flushTime.Format(time.RFC3339Nano), messageIdx)
 		}
 		m.bufferTimer = time.AfterFunc(bufferWindow, func() {
 			// Timer expired - send message to main loop safely via channel
 			if len(m.consolidatedAudioData) > 0 {
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Buffer Flush Trigger: Timer expired for Msg #%d. Sending flush msg.", m.bufferMessageIdx)
 				}
 				// Send message safely via uiUpdateChan
 				m.uiUpdateChan <- flushAudioBufferMsg{} // Send to channel
 			} else {
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Buffer Flush Trigger: Timer expired for Msg #%d, but buffer is empty. No flush needed.", m.bufferMessageIdx)
 				}
 			}
@@ -95,7 +96,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 
 		// Add the current chunk to the *new* buffer *after* setting up state
 		m.consolidatedAudioData = append(m.consolidatedAudioData, audioData...)
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Buffer Add (New): Msg #%d, Added=%d bytes, NewTotal=%d bytes",
 				messageIdx, chunkSize, len(m.consolidatedAudioData))
 		}
@@ -110,7 +111,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 		sizeThreshold := minBufferSizeForPlayback
 		if m.playerCmd == "afplay" {
 			sizeThreshold = minBufferSizeForPlayback * 2 // Double threshold for afplay
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Priority: Using increased size threshold %d bytes for afplay on Msg #%d",
 					sizeThreshold, messageIdx)
 			}
@@ -122,11 +123,11 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 			// Also adjust for afplay during active playback, but less aggressively
 			if m.playerCmd == "afplay" {
 				sizeThreshold = continuousPlaybackBufferSize * 3 / 2 // 1.5x threshold for afplay during active playback
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Buffer Priority: Using adjusted size threshold %d bytes for afplay during active playback of Msg #%d",
 						sizeThreshold, messageIdx)
 				}
-			} else if isAudioTraceEnabled() {
+			} else if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Priority: Using lower size threshold %d bytes for active Msg #%d",
 					sizeThreshold, messageIdx)
 			}
@@ -134,7 +135,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 
 		// Check if the *newly added* chunk triggers a size flush
 		if len(m.consolidatedAudioData) >= sizeThreshold {
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Flush Trigger: Size threshold reached immediately on new buffer for Msg #%d (%d >= %d).",
 					messageIdx, len(m.consolidatedAudioData), sizeThreshold)
 			}
@@ -154,7 +155,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 		bufferWindow := m.currentBufferWindow
 		if isActivePlayback {
 			bufferWindow = sameMessageBufferWindow
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Priority: Using shorter window %v for active playback of Msg #%d",
 					bufferWindow, messageIdx)
 			}
@@ -165,20 +166,20 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 			m.bufferTimer.Stop()
 		}
 		flushTime := time.Now().Add(bufferWindow)
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Buffer Timer: Resetting timeout for %s (at %s) for Msg #%d due to new chunk",
 				bufferWindow, flushTime.Format(time.RFC3339Nano), messageIdx)
 		}
 		m.bufferTimer = time.AfterFunc(bufferWindow, func() {
 			// Timer expired - send message to main loop safely
 			if len(m.consolidatedAudioData) > 0 {
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Buffer Flush Trigger: Timer (after reset) expired for Msg #%d. Sending flush msg.", m.bufferMessageIdx)
 				}
 				// Send message safely via uiUpdateChan
 				m.uiUpdateChan <- flushAudioBufferMsg{} // Send to channel
 			} else {
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Buffer Flush Trigger: Timer (after reset) expired for Msg #%d, but buffer empty.", m.bufferMessageIdx)
 				}
 			}
@@ -188,7 +189,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 		prevSize := len(m.consolidatedAudioData)
 		m.consolidatedAudioData = append(m.consolidatedAudioData, audioData...)
 		newSize := len(m.consolidatedAudioData)
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Buffer State: Msg #%d grew %d -> %d bytes (+%d) after %v",
 				messageIdx, prevSize, newSize, chunkSize, bufferAge)
 		}
@@ -198,7 +199,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 		sizeThreshold := minBufferSizeForPlayback
 		if m.playerCmd == "afplay" {
 			sizeThreshold = minBufferSizeForPlayback * 2 // Double threshold for afplay
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Priority: Using increased size threshold %d bytes for afplay on Msg #%d",
 					sizeThreshold, messageIdx)
 			}
@@ -210,11 +211,11 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 			// Also adjust for afplay during active playback, but less aggressively
 			if m.playerCmd == "afplay" {
 				sizeThreshold = continuousPlaybackBufferSize * 3 / 2 // 1.5x threshold for afplay during active playback
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Buffer Priority: Using adjusted size threshold %d bytes for afplay during active playback of Msg #%d",
 						sizeThreshold, messageIdx)
 				}
-			} else if isAudioTraceEnabled() {
+			} else if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Priority: Using lower size threshold %d bytes for active Msg #%d",
 					sizeThreshold, messageIdx)
 			}
@@ -222,7 +223,7 @@ func (m *Model) consolidateAndPlayAudio(audioData []byte, messageText string, me
 
 		// Check for size-based flush
 		if newSize >= sizeThreshold {
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Buffer Flush Trigger: Size threshold reached (%d >= %d) for Msg #%d.",
 					newSize, sizeThreshold, messageIdx)
 			}
@@ -253,7 +254,7 @@ func (m *Model) trackChunkStats(chunkSize int, timestamp time.Time) {
 		m.recentChunkTimes = m.recentChunkTimes[len(m.recentChunkTimes)-maxTracked:]
 	}
 
-	if isAudioTraceEnabled() && len(m.recentChunkSizes) >= 3 {
+	if helpers.IsAudioTraceEnabled() && len(m.recentChunkSizes) >= 3 {
 		var totalInterval time.Duration
 		validIntervals := 0
 		for i := 1; i < len(m.recentChunkTimes); i++ {
@@ -304,7 +305,7 @@ func (m *Model) adaptBufferWindow(chunkSize int, increase bool) {
 		}
 	}
 
-	if isAudioTraceEnabled() && m.currentBufferWindow != oldWindow {
+	if helpers.IsAudioTraceEnabled() && m.currentBufferWindow != oldWindow {
 		dir := "Increased"
 		if !increase {
 			dir = "Decreased"
@@ -317,7 +318,7 @@ func (m *Model) adaptBufferWindow(chunkSize int, increase bool) {
 func (m *Model) flushAudioBuffer() tea.Cmd {
 	now := time.Now()
 	if len(m.consolidatedAudioData) == 0 {
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Flush Skip: Buffer empty at %s", now.Format(time.RFC3339Nano))
 		}
 		return nil
@@ -342,13 +343,13 @@ func (m *Model) flushAudioBuffer() tea.Cmd {
 		// Increase base interval slightly for afplay when not actively playing back
 		// the same message (to avoid frequent file creation)
 		minFlushInterval = time.Duration(float64(minTimeBetweenFlushes) * 1.5)
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Flush Interval: Using increased interval %v for afplay on Msg #%d",
 				minFlushInterval, flushMsgIdx)
 		}
 	} else if isActivePlayback {
 		minFlushInterval = minTimeBetweenFlushes / 2
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Flush Interval: Using decreased interval %v for active playback on Msg #%d",
 				minFlushInterval, flushMsgIdx)
 		}
@@ -356,7 +357,7 @@ func (m *Model) flushAudioBuffer() tea.Cmd {
 
 	if !m.lastFlushTime.IsZero() && timeSinceLastFlush < minFlushInterval &&
 		bufferIsSmallEnoughToDelay && !isActivePlayback {
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Flush Skip: Throttled. LastFlush=%s ago (< %s), BufferSize=%d bytes. Msg #%d",
 				timeSinceLastFlush, minFlushInterval, bufferSize, flushMsgIdx)
 		}
@@ -365,13 +366,13 @@ func (m *Model) flushAudioBuffer() tea.Cmd {
 			m.bufferTimer.Stop()
 		}
 		waitTime := minTimeBetweenFlushes - timeSinceLastFlush
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Flush Retry: Scheduling retry in %s for Msg #%d", waitTime, flushMsgIdx)
 		}
 		m.bufferTimer = time.AfterFunc(waitTime, func() {
 			// Timer expired - send message safely
 			if len(m.consolidatedAudioData) > 0 {
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Flush Retry Trigger: Timer fired for Msg #%d. Sending flush msg.", m.bufferMessageIdx)
 				}
 				m.uiUpdateChan <- flushAudioBufferMsg{} // Send to channel
@@ -381,7 +382,7 @@ func (m *Model) flushAudioBuffer() tea.Cmd {
 	}
 
 	// --- Proceeding with Flush ---
-	if isAudioTraceEnabled() {
+	if helpers.IsAudioTraceEnabled() {
 		log.Printf("[AUDIO_PIPE] Flushing Buffer: Msg #%d, Size=%d bytes, Age=%v (LastFlush: %s ago)",
 			flushMsgIdx, bufferSize, bufferAge, timeSinceLastFlush)
 	}
@@ -396,7 +397,7 @@ func (m *Model) flushAudioBuffer() tea.Cmd {
 		messageText = m.messages[flushMsgIdx].Content
 		// Update the *message's* canonical AudioData with the complete flushed buffer
 		if !m.messages[flushMsgIdx].HasAudio || len(m.messages[flushMsgIdx].AudioData) < bufferSize {
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Flush: Updating message #%d final AudioData to %d bytes", flushMsgIdx, bufferSize)
 			}
 			m.messages[flushMsgIdx].HasAudio = true
@@ -419,7 +420,7 @@ func (m *Model) flushAudioBuffer() tea.Cmd {
 	m.bufferStartTime = time.Time{}
 
 	// Return the command to queue this flushed chunk for playback
-	if isAudioTraceEnabled() {
+	if helpers.IsAudioTraceEnabled() {
 		log.Printf("[AUDIO_PIPE] Queueing Flushed: Sending %d bytes from Msg #%d to playback channel", bufferSize, flushMsgIdx)
 	}
 
@@ -428,7 +429,7 @@ func (m *Model) flushAudioBuffer() tea.Cmd {
 	isPriority := m.isAudioProcessing && m.currentAudio != nil &&
 		m.currentAudio.MessageIndex == flushMsgIdx
 
-	if isPriority && isAudioTraceEnabled() {
+	if isPriority && helpers.IsAudioTraceEnabled() {
 		log.Printf("[AUDIO_PIPE] Priority Chunk: Marking chunk from Msg #%d as priority for continuous playback", flushMsgIdx)
 	}
 
@@ -442,7 +443,7 @@ func (m *Model) playConsolidatedAudio(audioData []byte, text string, messageIdx 
 			return audioPlaybackErrorMsg{err: errors.New("audio player command not configured")}
 		}
 		if len(audioData) == 0 {
-			if isAudioTraceEnabled() {
+			if helpers.IsAudioTraceEnabled() {
 				log.Printf("[AUDIO_PIPE] Playback Queue Consolidated: Skip empty chunk for Msg #%d", messageIdx)
 			}
 			return nil // Send nothing if no data
@@ -451,7 +452,7 @@ func (m *Model) playConsolidatedAudio(audioData []byte, text string, messageIdx 
 		audioSize := len(audioData)
 		estimatedDuration := float64(audioSize) / 48000.0
 
-		if isAudioTraceEnabled() {
+		if helpers.IsAudioTraceEnabled() {
 			log.Printf("[AUDIO_PIPE] Playback Queue Consolidated: Preparing chunk Size=%d bytes (~%.2fs), Msg #%d", audioSize, estimatedDuration, messageIdx)
 		}
 
@@ -466,7 +467,7 @@ func (m *Model) playConsolidatedAudio(audioData []byte, text string, messageIdx 
 		if m.audioChannel != nil {
 			select {
 			case m.audioChannel <- chunk:
-				if isAudioTraceEnabled() {
+				if helpers.IsAudioTraceEnabled() {
 					log.Printf("[AUDIO_PIPE] Playback Queue Consolidated: Sent %d bytes to channel.", audioSize)
 				}
 				return audioQueueUpdatedMsg{} // Signal success

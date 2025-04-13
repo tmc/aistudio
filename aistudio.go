@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/tmc/aistudio/api"
 	"github.com/tmc/aistudio/audioplayer"
+	"github.com/tmc/aistudio/internal/helpers"
 	"github.com/tmc/aistudio/settings"
 )
 
@@ -73,6 +74,10 @@ func New(opts ...Option) *Model {
 		// Focus management
 		focusedComponent:  "input", // Start with input focused
 		showSettingsPanel: false,   // Settings panel hidden by default
+
+		// History and tools default to disabled, enabled via options
+		historyEnabled: false,
+		enableTools:    false,
 	}
 
 	for _, opt := range opts {
@@ -124,6 +129,8 @@ func (m *Model) InitModel() (tea.Model, error) {
 	log.Printf("Show logo: %t", m.showLogo)
 	log.Printf("Show log messages: %t (max %d)", m.showLogMessages, m.maxLogMessages)
 	log.Printf("Show audio status: %t", m.showAudioStatus)
+	log.Printf("History enabled: %t", m.historyEnabled)
+	log.Printf("Tool calling enabled: %t", m.enableTools)
 
 	return m, nil
 }
@@ -299,6 +306,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 
+		case "ctrl+h": // Toggle history view or save history
+			if m.historyEnabled && m.historyManager != nil {
+				// Save current session
+				cmds = append(cmds, m.saveSessionCmd())
+
+				// Display a message about history saving
+				m.messages = append(m.messages, formatMessage("System", "Chat history saved."))
+				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.GotoBottom()
+			} else {
+				// Display a message about history being disabled
+				m.messages = append(m.messages, formatMessage("System", "Chat history is disabled. Enable with --history flag."))
+				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.GotoBottom()
+			}
+			return m, tea.Batch(cmds...)
+
 		case "enter": // Send message
 			if txt := strings.TrimSpace(m.textarea.Value()); txt != "" && m.streamReady {
 				m.messages = append(m.messages, formatMessage("You", txt)) // helpers.go
@@ -308,6 +332,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textarea.Focus()
 				m.sending = true
 				cmds = append(cmds, m.spinner.Tick)
+
+				// Save message to history if enabled
+				if m.historyEnabled && m.historyManager != nil {
+					m.historyManager.AddMessage(formatMessage("You", txt))
+					// Auto-save on new message
+					cmds = append(cmds, m.saveSessionCmd())
+				}
 
 				if m.useBidi && m.bidiStream != nil {
 					sendCmd = m.sendToBidiStreamCmd(txt) // stream.go
@@ -374,6 +405,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, newMessage)
 			idx := len(m.messages) - 1
 
+			// Save message to history if enabled
+			if m.historyEnabled && m.historyManager != nil && msg.output.Text != "" {
+				m.historyManager.AddMessage(newMessage)
+				// Auto-save periodically
+				cmds = append(cmds, m.saveSessionCmd())
+			}
+
 			if newMessage.HasAudio && m.enableAudio && m.playerCmd != "" {
 				log.Printf("[UI] Triggering playback for stream message #%d", idx)
 				cmds = append(cmds, m.playAudioCmd(newMessage.AudioData, newMessage.Content))
@@ -391,44 +429,86 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case bidiStreamResponseMsg: // stream.go (Bidirectional stream response)
 		m.receiving = true
-		if msg.output.Text != "" || len(msg.output.Audio) > 0 {
-			var targetMsgIdx int = -1
-			createNeeded := true
-			if len(m.messages) > 0 {
-				lastIdx := len(m.messages) - 1
-				if m.messages[lastIdx].Sender == "Gemini" && time.Since(m.messages[lastIdx].Timestamp) < 3*time.Second {
-					targetMsgIdx = lastIdx
-					createNeeded = false
-				}
-			}
 
-			if createNeeded {
-				newMessage := formatMessage("Gemini", msg.output.Text)
-				newMessage.Timestamp = time.Now()
-				m.messages = append(m.messages, newMessage)
-				targetMsgIdx = len(m.messages) - 1
-				if isAudioTraceEnabled() {
-					log.Printf("[AUDIO_PIPE] Created new message #%d for incoming bidi stream data", targetMsgIdx)
+		// Check for tool calls in the response if tool support is enabled
+		if m.enableTools && !m.processingTool {
+			toolCalls := ExtractToolCalls(&msg.output)
+			if len(toolCalls) > 0 {
+				// Process the tool calls
+				m.processingTool = true
+				results, err := m.processToolCalls(toolCalls)
+				if err != nil {
+					// Handle error
+					log.Printf("Error processing tool calls: %v", err)
+					m.messages = append(m.messages, formatError(fmt.Errorf("tool call error: %w", err)))
+				} else if len(results) > 0 {
+					// Send tool results back to model
+					cmds = append(cmds, m.sendToolResultsCmd(results))
 				}
-			} else {
-				if msg.output.Text != "" {
-					m.messages[targetMsgIdx].Content += msg.output.Text
-					m.messages[targetMsgIdx].Timestamp = time.Now()
-				}
-				if isAudioTraceEnabled() {
-					log.Printf("[AUDIO_PIPE] Appending to existing message #%d for incoming bidi stream data", targetMsgIdx)
-				}
+				m.processingTool = false
 			}
-
-			if len(msg.output.Audio) > 0 && m.enableAudio && m.playerCmd != "" && targetMsgIdx >= 0 {
-				consolidateCmd := m.consolidateAndPlayAudio(msg.output.Audio, m.messages[targetMsgIdx].Content, targetMsgIdx) // audio_manager.go
-				cmds = append(cmds, consolidateCmd)
-				// Don't set IsPlaying here; let audioPlaybackStartedMsg handle it
-			}
-
-			m.viewport.SetContent(m.formatAllMessages())
-			m.viewport.GotoBottom()
 		}
+
+		if msg.output.Text != "" || len(msg.output.Audio) > 0 {
+			// Skip tool call formatting text if it contains tool call markers
+			if m.enableTools && strings.Contains(msg.output.Text, "[TOOL_CALL]") {
+				// Tool call text shouldn't be displayed directly
+				// We'll let the tool handling code create more helpful messages
+			} else {
+				var targetMsgIdx int = -1
+				createNeeded := true
+				if len(m.messages) > 0 {
+					lastIdx := len(m.messages) - 1
+					if m.messages[lastIdx].Sender == "Gemini" && time.Since(m.messages[lastIdx].Timestamp) < 3*time.Second {
+						targetMsgIdx = lastIdx
+						createNeeded = false
+					}
+				}
+
+				if createNeeded {
+					newMessage := formatMessage("Gemini", msg.output.Text)
+					newMessage.Timestamp = time.Now()
+					m.messages = append(m.messages, newMessage)
+					targetMsgIdx = len(m.messages) - 1
+
+					// Save message to history if enabled
+					if m.historyEnabled && m.historyManager != nil && msg.output.Text != "" {
+						m.historyManager.AddMessage(newMessage)
+						// Auto-save periodically
+						cmds = append(cmds, m.saveSessionCmd())
+					}
+
+					if helpers.IsAudioTraceEnabled() {
+						log.Printf("[AUDIO_PIPE] Created new message #%d for incoming bidi stream data", targetMsgIdx)
+					}
+				} else {
+					if msg.output.Text != "" {
+						m.messages[targetMsgIdx].Content += msg.output.Text
+						m.messages[targetMsgIdx].Timestamp = time.Now()
+
+						// Update message in history
+						if m.historyEnabled && m.historyManager != nil {
+							if m.historyManager.CurrentSession != nil && targetMsgIdx < len(m.historyManager.CurrentSession.Messages) {
+								m.historyManager.CurrentSession.Messages[targetMsgIdx] = m.messages[targetMsgIdx]
+							}
+						}
+					}
+					if helpers.IsAudioTraceEnabled() {
+						log.Printf("[AUDIO_PIPE] Appending to existing message #%d for incoming bidi stream data", targetMsgIdx)
+					}
+				}
+
+				if len(msg.output.Audio) > 0 && m.enableAudio && m.playerCmd != "" && targetMsgIdx >= 0 {
+					consolidateCmd := m.consolidateAndPlayAudio(msg.output.Audio, m.messages[targetMsgIdx].Content, targetMsgIdx) // audio_manager.go
+					cmds = append(cmds, consolidateCmd)
+					// Don't set IsPlaying here; let audioPlaybackStartedMsg handle it
+				}
+
+				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.GotoBottom()
+			}
+		}
+
 		if m.bidiStream != nil && !m.quitting {
 			cmds = append(cmds, m.receiveBidiStreamCmd()) // Continue receiving
 		} else {
@@ -473,6 +553,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamCtxCancel()
 			m.streamCtxCancel = nil
 		}
+
+	// --- Tool Call Messages ---
+	case toolCallSentMsg:
+		// Tool call results sent successfully, nothing to do
+
+	case toolCallResultMsg:
+		// Results from tool calls, might be displayed or logged
+		log.Printf("Received %d tool call results", len(msg.results))
+
+	// --- History Messages ---
+	case historyLoadedMsg:
+		if msg.session != nil {
+			m.loadMessagesFromSession(msg.session)
+			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Loaded chat session: %s", msg.session.Title)))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+		}
+
+	case historyLoadFailedMsg:
+		m.messages = append(m.messages, formatError(fmt.Errorf("failed to load history: %w", msg.err)))
+		m.viewport.SetContent(m.formatAllMessages())
+		m.viewport.GotoBottom()
+
+	case historySavedMsg:
+		// History saved successfully, could show a notification
+		log.Println("Chat history saved successfully")
+
+	case historySaveFailedMsg:
+		m.messages = append(m.messages, formatError(fmt.Errorf("failed to save history: %w", msg.err)))
+		m.viewport.SetContent(m.formatAllMessages())
+		m.viewport.GotoBottom()
 
 	// --- Audio Messages ---
 	case audioPlaybackStartedMsg: // types.go
@@ -804,5 +915,13 @@ func (m *Model) Cleanup() {
 	if m.client != nil && m.client.GenAI != nil {
 		m.client.Close()
 	}
+
+	// Save any pending history changes
+	if m.historyEnabled && m.historyManager != nil && m.historyManager.CurrentSession != nil {
+		if err := m.historyManager.SaveSession(m.historyManager.CurrentSession); err != nil {
+			log.Printf("Error saving history during cleanup: %v", err)
+		}
+	}
+
 	log.Println("Cleanup finished.")
 }
