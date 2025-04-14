@@ -54,6 +54,22 @@ func main() {
 	listModelsFlag := flag.Bool("list-models", false, "List available models and exit.")
 	filterModelsFlag := flag.String("filter-models", "", "Filter models list (used with --list-models)")
 
+	// Generation parameters
+	temperatureFlag := flag.Float64("temperature", 0.7, "Temperature for text generation (0.0-1.0).")
+	topPFlag := flag.Float64("top-p", 0.95, "Top-p value for text generation (0.0-1.0).")
+	topKFlag := flag.Int("top-k", 40, "Top-k value for text generation.")
+	maxOutputTokensFlag := flag.Int("max-output-tokens", 8192, "Maximum number of tokens to generate.")
+
+	// Feature flags
+	webSearchFlag := flag.Bool("web-search", false, "Enable web search capabilities.")
+	codeExecutionFlag := flag.Bool("code-execution", false, "Enable code execution capabilities.")
+	displayTokensFlag := flag.Bool("display-tokens", false, "Display token counts in the UI.")
+	responseMimeTypeFlag := flag.String("response-mime-type", "", "Expected response MIME type (e.g., application/json).")
+	responseSchemaFileFlag := flag.String("response-schema-file", "", "Path to JSON schema file defining response structure.")
+	globalTimeoutFlag := flag.Duration("global-timeout", 0, "Global timeout for all API requests (e.g., 30s, 1m). Zero means no timeout.")
+	toolApprovalFlag := flag.Bool("tool-approval", false, "Require user approval for tool calls.")
+	stdinModeFlag := flag.Bool("stdin", false, "Read messages from stdin without running TUI. Useful for scripting.")
+
 	// Profiling flags (all with pprof- prefix)
 	cpuprofile := flag.String("pprof-cpu", "", "Write cpu profile to `file`")
 	memprofile := flag.String("pprof-mem", "", "Write memory profile to `file`")
@@ -66,6 +82,12 @@ func main() {
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nEnvironment Variables:\n")
 		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY: API Key (used if --api-key is not set).\n")
+		fmt.Fprintf(os.Stderr, "\nTimeout Examples:\n")
+		fmt.Fprintf(os.Stderr, "  30 second timeout: %s --global-timeout=30s\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  5 minute timeout: %s --global-timeout=5m\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nStdin Mode Examples:\n")
+		fmt.Fprintf(os.Stderr, "  Interactive: cat | %s --stdin\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Piped: echo \"Hello\" | %s --stdin\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nProfiling Examples:\n")
 		fmt.Fprintf(os.Stderr, "  CPU profile:    %s --pprof-cpu=cpu.prof\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  Memory profile: %s --pprof-mem=mem.prof\n", os.Args[0])
@@ -86,7 +108,7 @@ func main() {
 		// Disable standard logger output if file logging failed, to avoid cluttering stderr
 		log.SetOutput(io.Discard)
 	}
-	
+
 	// Handle --list-models flag
 	if *listModelsFlag {
 		fmt.Println("Fetching available models...")
@@ -97,25 +119,25 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Warning: No API key provided for listing models. Some models might not be visible.")
 			}
 		}
-		
+
 		// Initialize a client and options just for listing models
 		client := &api.Client{
 			APIKey: apiKey,
 		}
-		
+
 		models, err := client.ListModels(*filterModelsFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error listing models: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		fmt.Printf("Found %d models", len(models))
 		if *filterModelsFlag != "" {
 			fmt.Printf(" matching filter: %q", *filterModelsFlag)
 		}
 		fmt.Println()
 		fmt.Println("==========")
-		
+
 		// Sort and display models
 		sort.Strings(models)
 		for _, model := range models {
@@ -204,6 +226,8 @@ func main() {
 		aistudio.WithAudioOutput(*audioFlag, *voiceFlag),
 		aistudio.WithHistory(*historyFlag, *historyDirFlag),
 		aistudio.WithTools(*toolsFlag),
+		aistudio.WithGlobalTimeout(*globalTimeoutFlag),
+		aistudio.WithToolApproval(*toolApprovalFlag),
 	}
 
 	// Add system prompt if specified
@@ -220,28 +244,68 @@ func main() {
 		opts = append(opts, aistudio.WithAudioPlayerCommand(*playerCmdFlag))
 	}
 
-	// --- Initialize Component ---
-	component := aistudio.New(opts...)
-	model, err := component.InitModel()
-	if err != nil {
-		log.Printf("Failed to initialize model: %v", err)
-		fmt.Fprintf(os.Stderr, "Error initializing model: %v\n", err)
-		os.Exit(1)
+	// Add generation parameters
+	opts = append(opts, aistudio.WithTemperature(float32(*temperatureFlag)))
+	opts = append(opts, aistudio.WithTopP(float32(*topPFlag)))
+	opts = append(opts, aistudio.WithTopK(int32(*topKFlag)))
+	opts = append(opts, aistudio.WithMaxOutputTokens(int32(*maxOutputTokensFlag)))
+
+	// Add feature flags
+	opts = append(opts, aistudio.WithWebSearch(*webSearchFlag))
+	opts = append(opts, aistudio.WithCodeExecution(*codeExecutionFlag))
+	opts = append(opts, aistudio.WithDisplayTokenCounts(*displayTokensFlag))
+
+	// Add response configuration if specified
+	if *responseMimeTypeFlag != "" {
+		opts = append(opts, aistudio.WithResponseMimeType(*responseMimeTypeFlag))
 	}
 
-	// --- Run Bubble Tea Program ---
-	// Use options that help with input focus and program behavior
-	p := tea.NewProgram(
-		model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(), // Better mouse support
-	)
+	if *responseSchemaFileFlag != "" {
+		opts = append(opts, aistudio.WithResponseSchema(*responseSchemaFileFlag))
+	}
 
-	log.Println("Starting Bubble Tea program...")
-	if _, err := p.Run(); err != nil {
-		log.Printf("Error running program: %v", err)
-		fmt.Fprintf(os.Stderr, "Error running program: %v\n", err)
-		os.Exit(1)
+	// --- Initialize Component ---
+	component := aistudio.New(opts...)
+	
+	// Handle stdin mode if flag is set
+	if *stdinModeFlag {
+		// In stdin mode, audio is disabled
+		*audioFlag = false
+		
+		// Setup minimal logging for stdin mode
+		if logFile != nil {
+			log.Println("Running in stdin mode")
+		}
+		
+		// Process messages from stdin
+		if err := component.ProcessStdinMode(nil); err != nil {
+			log.Printf("Error in stdin mode: %v", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Normal TUI mode
+		model, err := component.InitModel()
+		if err != nil {
+			log.Printf("Failed to initialize model: %v", err)
+			fmt.Fprintf(os.Stderr, "Error initializing model: %v\n", err)
+			os.Exit(1)
+		}
+
+		// --- Run Bubble Tea Program ---
+		// Use options that help with input focus and program behavior
+		p := tea.NewProgram(
+			model,
+			tea.WithAltScreen(),
+			//tea.WithMouseCellMotion(), // Better mouse support
+		)
+
+		log.Println("Starting Bubble Tea program...")
+		if _, err := p.Run(); err != nil {
+			log.Printf("Error running program: %v", err)
+			fmt.Fprintf(os.Stderr, "Error running program: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Write memory profile at exit if requested

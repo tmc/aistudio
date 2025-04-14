@@ -81,8 +81,13 @@ func (m *Model) initStreamCmd() tea.Cmd {
 			m.streamCtxCancel()
 		}
 
-		// Create a new context with cancellation
-		m.streamCtx, m.streamCtxCancel = context.WithCancel(context.Background())
+		// Create a new context with cancellation, using the root context as parent if it exists
+		// Ensure root context exists first
+		if m.rootCtx == nil {
+			log.Println("Warning: Root context is nil, creating new background context")
+			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
+		}
+		m.streamCtx, m.streamCtxCancel = context.WithCancel(m.rootCtx)
 
 		clientConfig := api.ClientConfig{
 			ModelName:    m.modelName,
@@ -184,12 +189,12 @@ func (m *Model) receiveBidiStreamCmd() tea.Cmd {
 		}
 
 		output := api.ExtractBidiOutput(resp)
-		
+
 		// Check if there's a function call in the output that needs to be processed
 		if output.FunctionCall != nil {
 			log.Printf("Detected function call in bidi response: %s", output.FunctionCall.Name)
 		}
-		
+
 		return bidiStreamResponseMsg{output: output}
 	}
 }
@@ -199,6 +204,9 @@ func (m *Model) sendToStreamCmd(text string) tea.Cmd {
 	return func() tea.Msg {
 		// Since we're using StreamGenerateContent, we can't send data after the stream is created
 		// Instead, we'll need to close the current stream and create a new one with the user's message
+
+		// Stop any currently playing audio
+		m.StopCurrentAudio()
 
 		// Properly close the current stream if it exists
 		if m.stream != nil {
@@ -214,8 +222,13 @@ func (m *Model) sendToStreamCmd(text string) tea.Cmd {
 			m.streamCtxCancel()
 		}
 
-		// Create a new context with cancellation
-		m.streamCtx, m.streamCtxCancel = context.WithCancel(context.Background())
+		// Create a new context with cancellation, using the root context as parent if it exists
+		// Ensure root context exists first
+		if m.rootCtx == nil {
+			log.Println("Warning: Root context is nil, creating new background context")
+			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
+		}
+		m.streamCtx, m.streamCtxCancel = context.WithCancel(m.rootCtx)
 
 		log.Printf("Sending new message to %s via StreamGenerateContent: %s", m.modelName, text)
 
@@ -276,27 +289,7 @@ func (m *Model) sendToBidiStreamCmd(text string) tea.Cmd {
 		}
 
 		// Stop any currently playing audio
-		if m.isAudioProcessing && m.enableAudio {
-			log.Println("Stopping current audio playback before sending new message")
-			
-			// Clear audio buffer to stop ongoing accumulation
-			m.consolidatedAudioData = nil
-			if m.bufferTimer != nil {
-				m.bufferTimer.Stop()
-				m.bufferTimer = nil
-			}
-			
-			// The existing audio channel might contain pending chunks
-			// We don't want to drain it as that could block, but we can
-			// set a flag to indicate that audio processing should stop
-			if m.currentAudio != nil {
-				m.currentAudio.IsComplete = true
-				m.currentAudio = nil
-			}
-			
-			// Mark that we're no longer processing audio
-			m.isAudioProcessing = false
-		}
+		m.StopCurrentAudio()
 
 		// Send to existing bidirectional stream
 		log.Printf("Sending message to bidirectional stream: %s", text)

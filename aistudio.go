@@ -1,15 +1,20 @@
+// 2025-04-14
 package aistudio
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"os"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -19,6 +24,7 @@ import (
 	"github.com/tmc/aistudio/audioplayer"
 	"github.com/tmc/aistudio/internal/helpers"
 	"github.com/tmc/aistudio/settings"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -30,7 +36,15 @@ const (
 )
 
 // New creates a new Model instance with default settings and applies options.
+// Returns nil if initialization fails.
 func New(opts ...Option) *Model {
+	// Error handling for required dependencies
+	if len(opts) == 0 {
+		log.Println("Error: No options provided to New()")
+		fmt.Fprintf(os.Stderr, "Error: No configuration options provided\n")
+		return nil
+	}
+
 	ta := textarea.New()
 	ta.Placeholder = "Type something and press Enter..."
 	ta.Focus()
@@ -119,6 +133,16 @@ func (m *Model) InitModel() (tea.Model, error) {
 	}
 	m.client.APIKey = m.apiKey
 
+	// Create root context with timeout if specified
+	if m.rootCtx == nil {
+		if m.globalTimeout > 0 {
+			m.rootCtx, m.rootCtxCancel = context.WithTimeout(context.Background(), m.globalTimeout)
+			log.Printf("Global timeout set to %s", m.globalTimeout)
+		} else {
+			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
+		}
+	}
+
 	// Set up log interceptor if log messages are enabled
 	if m.showLogMessages {
 		interceptor := &logInterceptor{
@@ -137,6 +161,9 @@ func (m *Model) InitModel() (tea.Model, error) {
 	log.Printf("Using model: %s", m.modelName)
 	log.Printf("Bidirectional streaming enabled: %t", m.useBidi)
 	log.Printf("Audio output enabled: %t", m.enableAudio)
+	if m.globalTimeout > 0 {
+		log.Printf("Global timeout: %s", m.globalTimeout)
+	}
 	if m.enableAudio {
 		log.Printf("Audio voice: %s", m.voiceName)
 		log.Printf("Audio player command: %q", m.playerCmd)
@@ -167,6 +194,138 @@ func (m *Model) InitModel() (tea.Model, error) {
 	}
 
 	return m, nil
+}
+
+// ProcessStdinMode processes messages from stdin without running the TUI
+// This is useful for scripting or non-interactive usage
+func (m *Model) ProcessStdinMode(ctx context.Context) error {
+	if m.client == nil {
+		m.client = &api.Client{}
+	}
+	m.client.APIKey = m.apiKey
+
+	// Create root context with timeout if specified or use the provided context
+	if ctx == nil {
+		if m.globalTimeout > 0 {
+			m.rootCtx, m.rootCtxCancel = context.WithTimeout(context.Background(), m.globalTimeout)
+			log.Printf("Global timeout set to %s", m.globalTimeout)
+		} else {
+			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
+		}
+	} else {
+		m.rootCtx = ctx
+	}
+
+	// Initialize client
+	if err := m.client.InitClient(m.rootCtx); err != nil {
+		return fmt.Errorf("failed to initialize client: %w", err)
+	}
+
+	// Init tools if enabled
+	if m.enableTools && m.toolManager == nil {
+		m.toolManager = NewToolManager()
+		// Register default tools
+		if err := m.toolManager.RegisterDefaultTools(); err != nil {
+			log.Printf("Warning: Failed to register default tools: %v", err)
+		}
+	}
+
+	// Initialize the bidi stream
+	config := api.ClientConfig{
+		ModelName:    m.modelName,
+		EnableAudio:  false, // Disable audio in stdin mode
+		SystemPrompt: m.systemPrompt,
+		// Add other config options as needed
+		Temperature:     m.temperature,
+		TopP:            m.topP,
+		TopK:            m.topK,
+		MaxOutputTokens: m.maxOutputTokens,
+	}
+
+	// Add tool definitions if enabled
+	if m.enableTools && m.toolManager != nil {
+		config.ToolDefinitions = m.toolManager.GetAvailableTools()
+	}
+
+	// Initialize bidirectional stream
+	var err error
+	m.bidiStream, err = m.client.InitBidiStream(m.rootCtx, config)
+	if err != nil {
+		return fmt.Errorf("failed to initialize bidirectional stream: %w", err)
+	}
+	defer m.bidiStream.CloseSend()
+
+	// Create scanner to read from stdin
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Fprintln(os.Stderr, "aistudio stdin mode - Type messages and press Enter. Use Ctrl+D to exit.")
+
+	// Process messages from stdin
+	for scanner.Scan() {
+		message := scanner.Text()
+		if message == "" {
+			continue
+		}
+
+		// Send message to stream
+		if err := m.client.SendMessageToBidiStream(m.bidiStream, message); err != nil {
+			return fmt.Errorf("failed to send message: %w", err)
+		}
+
+		// Receive response
+		var responseText strings.Builder
+
+		for {
+			resp, err := m.bidiStream.Recv()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return fmt.Errorf("stream error: %w", err)
+			}
+
+			// Extract text from response
+			output := api.ExtractBidiOutput(resp)
+			responseText.WriteString(output.Text)
+
+			// Process tool calls if enabled
+			if m.enableTools && output.FunctionCall != nil {
+				// Extract and process tool calls
+				toolCalls := ExtractToolCalls(&output)
+				if len(toolCalls) > 0 {
+					results, err := m.executeToolCalls(toolCalls)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error processing tool calls: %v\n", err)
+					} else if len(results) > 0 {
+						// Convert ToolResult slice to []*generativelanguagepb.FunctionResponse
+						var fnResults []*generativelanguagepb.FunctionResponse
+						for i := range results {
+							fnResults = append(fnResults, (*generativelanguagepb.FunctionResponse)(&results[i]))
+						}
+
+						// Send function responses back to model
+						if err := m.client.SendToolResultsToBidiStream(m.bidiStream, fnResults...); err != nil {
+							fmt.Fprintf(os.Stderr, "Error sending tool results: %v\n", err)
+						}
+					}
+				}
+			}
+
+			// Check if this is the final chunk
+			if output.IsFinalChunk {
+				break
+			}
+		}
+
+		// Output response
+		fmt.Println(responseText.String())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("stdin read error: %w", err)
+	}
+
+	return nil
 }
 
 // initCmd returns the command sequence to start the application logic.
@@ -230,6 +389,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		startPlaybackTicker bool // Flag to start the ticker
 	)
 
+	// Check if the root context is done (timeout or cancelled)
+	if m.rootCtx != nil && m.rootCtx.Err() != nil {
+		log.Printf("Root context closed: %v", m.rootCtx.Err())
+		m.quitting = true
+		return m, tea.Quit
+	}
+
 	// Update standard components
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -263,6 +429,86 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
+		// Add handlers for Y/N keys for tool approval
+		case "y", "Y": // Approve tool call
+			if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
+				// Get the current tool call
+				approvedCalls := []ToolCall{m.pendingToolCalls[m.approvalIndex]}
+
+				// Execute the approved tool call
+				log.Printf("Tool call approved: %s", approvedCalls[0].Name)
+
+				// Process the tool call
+				results, err := m.executeToolCalls(approvedCalls)
+				if err != nil {
+					log.Printf("Error executing tool call: %v", err)
+					m.messages = append(m.messages, formatError(fmt.Errorf("error executing tool call: %w", err)))
+				} else if len(results) > 0 {
+					// Send results back to model
+					cmds = append(cmds, m.sendToolResultsCmd(results))
+				}
+
+				// Move to next tool call or close modal
+				m.approvalIndex++
+				if m.approvalIndex >= len(m.pendingToolCalls) {
+					// All tool calls processed, close the modal
+					m.showToolApproval = false
+					m.pendingToolCalls = nil
+					m.approvalIndex = 0
+				}
+
+				// Update UI
+				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.GotoBottom()
+				return m, tea.Batch(cmds...)
+			}
+
+		case "n", "N": // Deny tool call
+			if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
+				// Get the current tool call
+				deniedCall := m.pendingToolCalls[m.approvalIndex]
+
+				// Log the denial
+				log.Printf("Tool call denied: %s", deniedCall.Name)
+
+				// Create a message about the denial
+				m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Tool call to '%s' was denied by the user.", deniedCall.Name)))
+
+				// Create an error function response
+				var fnResponse generativelanguagepb.FunctionResponse
+				fnResponse.Id = deniedCall.ID
+				fnResponse.Response, _ = structpb.NewStruct(map[string]any{
+					"error": "Tool call denied by user",
+				})
+
+				// Send the error result back to the model
+				cmds = append(cmds, func() tea.Msg {
+					if m.bidiStream == nil {
+						return sendErrorMsg{err: fmt.Errorf("bidirectional stream not initialized")}
+					}
+
+					err := m.client.SendToolResultsToBidiStream(m.bidiStream, &fnResponse)
+					if err != nil {
+						return sendErrorMsg{err: fmt.Errorf("failed to send tool denial: %w", err)}
+					}
+
+					return toolCallSentMsg{}
+				})
+
+				// Move to next tool call or close modal
+				m.approvalIndex++
+				if m.approvalIndex >= len(m.pendingToolCalls) {
+					// All tool calls processed, close the modal
+					m.showToolApproval = false
+					m.pendingToolCalls = nil
+					m.approvalIndex = 0
+				}
+
+				// Update UI
+				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.GotoBottom()
+				return m, tea.Batch(cmds...)
+			}
 		case "ctrl+c":
 			m.quitting = true
 			if m.stream != nil {
@@ -595,10 +841,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
+				// Handle audio if available and enabled
 				if len(msg.output.Audio) > 0 && m.enableAudio && m.playerCmd != "" && targetMsgIdx >= 0 {
 					consolidateCmd := m.consolidateAndPlayAudio(msg.output.Audio, m.messages[targetMsgIdx].Content, targetMsgIdx) // audio_manager.go
 					cmds = append(cmds, consolidateCmd)
 					// Don't set IsPlaying here; let audioPlaybackStartedMsg handle it
+				}
+
+				// Mark HasAudio = true if there's audio data, regardless of whether audio is enabled
+				if len(msg.output.Audio) > 0 && targetMsgIdx >= 0 {
+					m.messages[targetMsgIdx].HasAudio = true
+					if !m.enableAudio {
+						// Store the audio data even if playback is disabled
+						m.messages[targetMsgIdx].AudioData = msg.output.Audio
+					}
 				}
 
 				m.viewport.SetContent(m.formatAllMessages())
@@ -876,6 +1132,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the UI.
 func (m Model) View() string {
 	if m.quitting {
+		if m.rootCtx != nil && m.rootCtx.Err() == context.DeadlineExceeded {
+			return "Global timeout reached. Closing stream and quitting...\n"
+		}
 		return "Closing stream and quitting...\n"
 	}
 
@@ -912,7 +1171,35 @@ func (m Model) View() string {
 	// Main content view (without settings panel)
 	var mainContent strings.Builder
 	mainContent.WriteString(m.headerView()) // In ui.go
-	mainContent.WriteString(m.viewport.View())
+
+	// Show tool approval modal if needed
+	if m.showToolApproval && len(m.pendingToolCalls) > 0 {
+		// Center the modal in the viewport
+		modalContent := m.renderToolApprovalModal() // In ui.go
+
+		// Calculate position for centering
+		modalLines := strings.Split(modalContent, "\n")
+		modalHeight := len(modalLines)
+
+		// Add some empty space before the modal to center it vertically
+		emptySpaceBefore := (m.viewport.Height - modalHeight) / 2
+		if emptySpaceBefore > 0 {
+			mainContent.WriteString(strings.Repeat("\n", emptySpaceBefore))
+		}
+
+		// Add the modal
+		mainContent.WriteString(modalContent)
+
+		// Add empty space after if needed
+		emptySpaceAfter := m.viewport.Height - modalHeight - emptySpaceBefore
+		if emptySpaceAfter > 0 {
+			mainContent.WriteString(strings.Repeat("\n", emptySpaceAfter))
+		}
+	} else {
+		// Show normal viewport
+		mainContent.WriteString(m.viewport.View())
+	}
+
 	mainContent.WriteString(m.footerView()) // In ui.go
 
 	// If settings panel is visible, join horizontally
@@ -992,6 +1279,13 @@ func (m Model) View() string {
 // Cleanup properly releases all resources
 func (m *Model) Cleanup() {
 	log.Println("Cleaning up resources")
+
+	// Cancel root context if it exists
+	if m.rootCtxCancel != nil {
+		log.Println("Canceling root context")
+		m.rootCtxCancel()
+		m.rootCtxCancel = nil
+	}
 
 	// Close streams and contexts
 	if m.stream != nil {

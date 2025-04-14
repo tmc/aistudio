@@ -1,3 +1,4 @@
+// Edited with Aider on April 14, 2025
 package aistudio
 
 import (
@@ -47,25 +48,25 @@ const progressBarWidth = 25 // characters
 
 // Styles
 var (
-	senderYouStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // Cyan
-	senderGeminiStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")) // Magenta
-	senderSystemStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("8"))   // Gray
+	senderYouStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))    // Cyan
+	senderGeminiStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))    // Magenta
+	senderSystemStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("8"))    // Gray
 	toolCallStyle     = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("36")) // Cyan italic for tool calls
-	errorStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)   // Red
+	errorStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)    // Red
 	statusStyle       = lipgloss.NewStyle().Faint(true)
-	inputModeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)  // Bright Green
-	logoStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)   // Magenta
-	logMessageStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)  // Gray
+	inputModeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true) // Bright Green
+	logoStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)  // Magenta
+	logMessageStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true) // Gray
 	// Audio UI Styles
 	audioIconStyle  = lipgloss.NewStyle().Bold(true)
-	audioTimeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))                // Gray
-	audioProgStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))                // Magenta
-	audioHelpStyle  = statusStyle                                                        // Reuse faint style
+	audioTimeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // Gray
+	audioProgStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("5")) // Magenta
+	audioHelpStyle  = statusStyle                                         // Reuse faint style
 	audioPlayIcon   = audioIconStyle.Foreground(lipgloss.Color("10")).Render("▶")
 	audioPlayedIcon = audioIconStyle.Foreground(lipgloss.Color("8")).Render("✓")
 	audioReadyIcon  = audioIconStyle.Foreground(lipgloss.Color("5")).Render("🔊")
 	// Executable Code Styles
-	executableCodeLangStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")) // Yellow for language
+	executableCodeLangStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))     // Yellow for language
 	executableCodeBlockStyle  = lipgloss.NewStyle().Background(lipgloss.Color("235")).Padding(0, 1) // Dark gray background for code block
-	executableCodeResultStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("40")) // Green for successful output
+	executableCodeResultStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("40"))                // Green for successful output
 )
