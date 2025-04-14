@@ -15,6 +15,7 @@ import (
 
 	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
 	tea "github.com/charmbracelet/bubbletea"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/tmc/aistudio/api"
 )
@@ -32,12 +33,7 @@ type ToolCall struct {
 }
 
 // ToolResult represents the result of executing a tool call
-type ToolResult struct {
-	ID       string      `json:"id"` // Should match the ID of the corresponding ToolCall
-	Status   string      `json:"status,omitempty"`
-	Response interface{} `json:"response,omitempty"` // The result of the tool call
-	Error    string      `json:"error,omitempty"`    // Error message if the tool call failed
-}
+type ToolResult = api.ToolResult
 
 // ToolManager manages tool registration and execution
 type ToolManager struct {
@@ -73,14 +69,15 @@ func convertTempSchemaToProtoSchema(temp *tempParamSchema) (*generativelanguagep
 		Enum:        temp.Enum,
 	}
 
+	// Convert the type string to the corresponding GenerationConfig_Type enum
 	switch strings.ToLower(temp.Type) {
 	case "string":
 		protoSchema.Type = generativelanguagepb.Type_STRING
-	case "number":
-		protoSchema.Type = generativelanguagepb.Type_NUMBER
-	case "integer":
+	case "integer", "int", "int32", "int64":
 		protoSchema.Type = generativelanguagepb.Type_INTEGER
-	case "boolean":
+	case "number", "float", "double":
+		protoSchema.Type = generativelanguagepb.Type_NUMBER
+	case "boolean", "bool":
 		protoSchema.Type = generativelanguagepb.Type_BOOLEAN
 	case "array":
 		protoSchema.Type = generativelanguagepb.Type_ARRAY
@@ -88,13 +85,8 @@ func convertTempSchemaToProtoSchema(temp *tempParamSchema) (*generativelanguagep
 			var err error
 			protoSchema.Items, err = convertTempSchemaToProtoSchema(temp.Items)
 			if err != nil {
-				return nil, fmt.Errorf("failed to convert array items schema: %w", err)
+				return nil, fmt.Errorf("failed to convert array items: %w", err)
 			}
-		} else {
-			// Gemini API requires items schema for arrays. Defaulting to string.
-			// Consider logging a warning or making this stricter if needed.
-			log.Printf("Warning: Array schema for field description '%s' lacks 'items' definition. Defaulting items type to STRING.", temp.Description)
-			protoSchema.Items = &generativelanguagepb.Schema{Type: generativelanguagepb.Type_STRING}
 		}
 	case "object":
 		protoSchema.Type = generativelanguagepb.Type_OBJECT
@@ -255,88 +247,67 @@ func ParseToolDefinitions(in io.Reader) ([]ToolDefinition, error) {
 				finalToolDefs = append(finalToolDefs, ToolDefinition{
 					Name:        funcDecl.Name,
 					Description: funcDecl.Description,
-					Parameters:  protoSchema, // Assign the converted schema
+					Parameters:  protoSchema, // Could be nil if parameters were empty/null
 				})
 			}
 		}
-
 		// If we successfully converted at least one tool, return them.
+		// Also return any non-fatal parsing/conversion errors encountered.
 		if len(finalToolDefs) > 0 {
 			var combinedErr error
 			if len(conversionErrs) > 0 {
-				// Append conversion errors to the main parse errors list
-				parseErrs = append(parseErrs, fmt.Sprintf("encountered errors during Gemini parameter conversion: %s", strings.Join(conversionErrs, "; ")))
-				combinedErr = fmt.Errorf(strings.Join(parseErrs, "; ")) // Report all errors
+				combinedErr = fmt.Errorf("encountered errors during parameter processing: %s", strings.Join(conversionErrs, "; "))
 			}
 			return finalToolDefs, combinedErr // Return successfully converted tools and any errors
 		}
+		// If parsing succeeded but resulted in zero tools after filtering errors
 		parseErrs = append(parseErrs, fmt.Sprintf("parsing as Gemini format succeeded but yielded no valid tools after parameter processing: %s", strings.Join(conversionErrs, "; ")))
 
 	} else if err != nil {
-		// Check if it was an unknown field error, which might indicate the first format was closer
-		if strings.Contains(err.Error(), "unknown field") {
-			parseErrs = append(parseErrs, fmt.Sprintf("parsing as Gemini format failed (strict): %v", err))
-		} else {
-			parseErrs = append(parseErrs, fmt.Sprintf("parsing as Gemini format failed: %v", err))
-		}
+		parseErrs = append(parseErrs, fmt.Sprintf("parsing as Gemini format failed: %v", err))
 	} else {
-		parseErrs = append(parseErrs, "parsing as Gemini format resulted in empty structure")
+		// It's valid JSON, but an empty list or not the expected structure
+		parseErrs = append(parseErrs, "parsing as Gemini format resulted in empty list")
 	}
 
-	// If all attempts failed or yielded no tools
-	return nil, fmt.Errorf("failed to parse tool definitions in any known format or yielded no valid tools: %s", strings.Join(parseErrs, "; "))
+	// If all attempts failed, return a combined error
+	return nil, fmt.Errorf("failed to parse tool definitions in any recognized format: %s", strings.Join(parseErrs, "; "))
 }
 
-// RegisterTool registers a tool that can be called by the model
-func (tm *ToolManager) RegisterTool(name string, description string, parameters interface{}, handler func(args json.RawMessage) (interface{}, error)) error {
+// RegisterTool registers a new tool with the given name, description, and handler.
+func (tm *ToolManager) RegisterTool(name, description string, parameters json.RawMessage, handler func(json.RawMessage) (any, error)) error {
+	if name == "" {
+		return fmt.Errorf("tool name cannot be empty")
+	}
+
+	if description == "" {
+		return fmt.Errorf("tool description cannot be empty")
+	}
+
+	// Process the parameters
 	var protoSchema *generativelanguagepb.Schema
-	var err error
-
-	// Only process parameters if they are non-nil
-	if parameters != nil {
-		var paramBytes []byte
-
-		// If parameters are already json.RawMessage, use them directly.
-		// Otherwise, marshal the provided interface{} (e.g., map[string]interface{}) to JSON bytes.
-		if rawMsg, ok := parameters.(json.RawMessage); ok {
-			paramBytes = rawMsg
-		} else {
-			paramBytes, err = json.Marshal(parameters)
-			if err != nil {
-				return fmt.Errorf("failed to marshal parameters for tool '%s': %w", name, err)
-			}
-		}
-
-		// Check if parameters are effectively null/empty after potentially marshalling
-		if len(paramBytes) > 0 && string(paramBytes) != "null" && string(paramBytes) != "{}" {
-			// Ensure the parameter bytes are valid JSON before proceeding
-			if !json.Valid(paramBytes) {
-				log.Printf("Warning: Invalid JSON provided for parameters of tool '%s'. Skipping parameter definition.", name)
-				protoSchema = nil
+	if len(parameters) > 0 {
+		// Handle JSON parameters
+		// If parameters is a JSON string, it might already be a Schema
+		// But more likely, it's a JSON schema in string format that needs conversion
+		if json.Valid(parameters) {
+			// Try to unmarshal directly into the temp schema for conversion
+			var tempSchema tempParamSchema
+			if err := json.Unmarshal(parameters, &tempSchema); err != nil {
+				log.Printf("Warning: Failed to unmarshal parameters JSON for tool '%s': %v. Parameters might be incomplete.", name, err)
 			} else {
-				// Unmarshal the JSON bytes into the temporary schema structure
-				var tempSchema tempParamSchema
-				err = json.Unmarshal(paramBytes, &tempSchema)
+				// Convert the temporary schema to the protobuf schema
+				var err error
+				protoSchema, err = convertTempSchemaToProtoSchema(&tempSchema)
 				if err != nil {
-					// Log warning if unmarshal into temp schema fails
-					log.Printf("Warning: Failed to unmarshal parameters for tool '%s' into temp schema: %v. Parameters might be incomplete.", name, err)
-					protoSchema = nil // Proceed without parameters on error
-				} else {
-					// Convert the temporary schema to the protobuf schema
-					protoSchema, err = convertTempSchemaToProtoSchema(&tempSchema)
-					if err != nil {
-						log.Printf("Warning: Failed to convert parameters schema for tool '%s': %v. Parameters might be incomplete.", name, err)
-						protoSchema = nil // Proceed without parameters on conversion error
-					}
+					log.Printf("Warning: Failed to convert parameters schema for tool '%s': %v. Parameters might be incomplete.", name, err)
+					protoSchema = nil // Proceed without parameters on conversion error
 				}
 			}
 		} else {
-			// Handle cases where parameters are explicitly null or empty JSON
-			protoSchema = nil
+			// Handle cases where parameters are not valid JSON
+			log.Printf("Warning: Parameters for tool '%s' are not valid JSON. Parameters will be omitted.", name)
 		}
-	} else {
-		// No parameters provided
-		protoSchema = nil
 	}
 
 	// Ensure handler is not nil
@@ -378,14 +349,40 @@ func (m *Model) processToolCalls(toolCalls []ToolCall) ([]ToolResult, error) {
 		return nil, fmt.Errorf("tool manager not initialized")
 	}
 
+	// If tool approval is required, show the approval modal
+	if m.requireApproval {
+		// Store the tool calls for approval
+		m.pendingToolCalls = toolCalls
+		m.approvalIndex = 0
+		m.showToolApproval = true
+
+		// Return empty results for now - the tools will be processed
+		// when the user approves them in the UI
+		return nil, nil
+	}
+
+	// Process tools immediately if approval not required
+	return m.executeToolCalls(toolCalls)
+}
+
+func mkErrorResponseStruct(err error) *structpb.Struct {
+	s, _ := structpb.NewStruct(map[string]any{
+		"error": err.Error(),
+	})
+	return s
+}
+
+// executeToolCalls actually executes the tool calls after they've been approved
+func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResult, error) {
 	var results []ToolResult
 	for _, call := range toolCalls {
-		result := ToolResult{ID: call.ID}
-
+		result := ToolResult{
+			Id:   call.ID, // Use the correct field name 'Id'
+			Name: call.Name,
+		}
 		registeredTool, exists := m.toolManager.RegisteredTools[call.Name]
 		if !exists || !registeredTool.IsAvailable {
-			result.Status = "error"
-			result.Error = fmt.Sprintf("Tool '%s' not available", call.Name)
+			result.Response = mkErrorResponseStruct(fmt.Errorf("tool '%s' not found or not available", call.Name))
 			results = append(results, result)
 			continue
 		}
@@ -398,13 +395,13 @@ func (m *Model) processToolCalls(toolCalls []ToolCall) ([]ToolResult, error) {
 
 		// Process the tool call
 		response, err := registeredTool.Handler(call.Arguments)
-		if err != nil {
-			result.Status = "error"
-			result.Error = err.Error()
-		} else {
-			result.Status = "success"
-			result.Response = response
+		resp := map[string]any{
+			"result": response,
 		}
+		if err != nil {
+			resp["error"] = err.Error()
+		}
+		result.Response, _ = structpb.NewStruct(resp)
 
 		// Add a system message with the formatted result
 		resultMessage := formatToolResult(result) // Use the new formatter
@@ -436,8 +433,9 @@ func formatToolCall(call ToolCall) string {
 // formatToolResult creates a formatted string for displaying a tool result in the UI.
 func formatToolResult(result ToolResult) string {
 	var resultStr string
-	if result.Error != "" {
-		resultStr = fmt.Sprintf("❌ Error: %s", result.Error)
+
+	if errVal, ok := result.Response.Fields["error"]; ok {
+		resultStr = fmt.Sprintf("❌ Error: %s", errVal.GetStringValue())
 	} else {
 		// Pretty-print the JSON response
 		responseBytes, err := json.MarshalIndent(result.Response, "", "  ")
@@ -448,7 +446,7 @@ func formatToolResult(result ToolResult) string {
 			resultStr = fmt.Sprintf("✅ Result:\n```json\n%s\n```", string(responseBytes))
 		}
 	}
-	return fmt.Sprintf("Tool Result (ID: %s)\n%s", result.ID, resultStr)
+	return fmt.Sprintf("Tool Result (ID: %s)\n%s", result.Id, resultStr) // Use the correct field name 'Id'
 }
 
 // sendToolResultsCmd creates a command that sends tool results back to the model
@@ -467,8 +465,12 @@ func (m *Model) sendToolResultsCmd(results []ToolResult) tea.Cmd {
 
 		log.Printf("Sending tool results to model: %s", string(resultsJson))
 
+		var fnResps []*generativelanguagepb.FunctionResponse
+		for _, result := range results {
+			fnResps = append(fnResps, (*generativelanguagepb.FunctionResponse)(&result))
+		}
 		// Send to existing bidirectional stream using the API client
-		err = m.client.SendToolResultsToBidiStream(m.bidiStream, results)
+		err = m.client.SendToolResultsToBidiStream(m.bidiStream, fnResps...)
 		if err != nil {
 			return sendErrorMsg{err: fmt.Errorf("failed to send tool results: %w", err)}
 		}
@@ -483,13 +485,10 @@ func ExtractToolCalls(resp *api.StreamOutput) []ToolCall {
 	if resp.FunctionCall != nil {
 		// Extract information from the API's function call
 		functionCall := resp.FunctionCall
-		
+
 		// Generate a unique ID for the tool call if one is not provided
-		id := functionCall.Name
-		if id == "" {
-			id = fmt.Sprintf("call_%d", time.Now().UnixNano())
-		}
-		
+		id := functionCall.Id
+
 		// Marshal the arguments to JSON for consistent handling
 		argsJson, err := json.Marshal(functionCall.Args)
 		if err != nil {
@@ -497,17 +496,17 @@ func ExtractToolCalls(resp *api.StreamOutput) []ToolCall {
 			// Fallback to empty JSON object if marshaling fails
 			argsJson = []byte("{}")
 		}
-		
+
 		toolCall := ToolCall{
 			ID:        id,
 			Name:      functionCall.Name,
 			Arguments: argsJson,
 		}
-		
+
 		log.Printf("Extracted tool call from API: %s with arguments %s", toolCall.Name, string(toolCall.Arguments))
 		return []ToolCall{toolCall}
 	}
-	
+
 	// Fallback to looking for marker-based tool calls in the text
 	// This is for backward compatibility with older implementations
 	if strings.Contains(resp.Text, "[TOOL_CALL]") {
@@ -656,12 +655,30 @@ func ExecuteCommandTool(command string, args []string, timeout time.Duration) (s
 	ctx := context.Background()
 	var cancel context.CancelFunc
 
+	// TODO: configurable prefix?
+	command = fmt.Sprintf("aistudio-tool-%s", command)
+
+	// Check if the command exists in PATH
+	execPath, found := findExecutableInPath(command)
+	if !found {
+		return "", fmt.Errorf("command '%s' not found in PATH", command)
+	}
+	// Use the full path to the executable
+	command = execPath
+
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
 	cmd := exec.CommandContext(ctx, command, args...)
+	// set up very restricted environment:
+	path := os.Getenv("PATH")
+	cmd.Env = []string{
+		"PATH=" + path,
+		"HOME=/tmp",
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -674,12 +691,31 @@ func ExecuteCommandTool(command string, args []string, timeout time.Duration) (s
 	return stdout.String(), nil
 }
 
+// findExecutableInPath checks if an executable exists in the PATH
+func findExecutableInPath(executable string) (string, bool) {
+	// Try to find the executable in PATH
+	path, err := exec.LookPath(executable)
+	if err == nil {
+		return path, true
+	}
+
+	// Check if a tool-specific executable exists (aistudio-tool-{name})
+	toolSpecificName := "aistudio-tool-" + executable
+	path, err = exec.LookPath(toolSpecificName)
+	if err == nil {
+		return path, true
+	}
+
+	return "", false
+}
+
 // createHandlerForFileDefinition creates a handler function based on a FileToolDefinition
-func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessage) (interface{}, error), error) {
+func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessage) (any, error), error) {
 	switch def.Handler {
 	case "system_info":
 		// This handler is defined inline for simplicity, matching RegisterDefaultTools
-		return func(args json.RawMessage) (interface{}, error) {
+		return func(args json.RawMessage) (any, error) {
+			return nil, fmt.Errorf("system_info handler is not implemented yet")
 			var params struct {
 				IncludeTime bool `json:"include_time"`
 			}
@@ -687,7 +723,7 @@ func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessag
 				return nil, err
 			}
 
-			result := map[string]interface{}{
+			result := map[string]any{
 				"hostname": "localhost",
 			}
 
@@ -700,7 +736,8 @@ func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessag
 
 	case "exec_command":
 		// This handler is defined inline for simplicity, matching RegisterDefaultTools
-		return func(args json.RawMessage) (interface{}, error) {
+		return func(args json.RawMessage) (any, error) {
+			return nil, fmt.Errorf("exec_command handler is not implemented yet")
 			var params struct {
 				Command   string   `json:"command"`
 				Args      []string `json:"args,omitempty"`
@@ -726,6 +763,20 @@ func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessag
 				return nil, fmt.Errorf("command '%s' is not allowed for security reasons", params.Command)
 			}
 
+			// Verify the command exists in PATH
+			execPath, found := findExecutableInPath(params.Command)
+			if !found {
+				log.Printf("Warning: Command '%s' not found in PATH", params.Command)
+				return map[string]any{
+					"success": false,
+					"error":   fmt.Sprintf("Command '%s' not found. Make sure it's installed and in your PATH.", params.Command),
+				}, nil
+			}
+
+			// Use the full path to the executable
+			log.Printf("Using executable at: %s", execPath)
+			params.Command = execPath
+
 			// Set a default timeout if none provided
 			timeout := time.Duration(params.TimeoutMs) * time.Millisecond
 			if timeout == 0 {
@@ -735,164 +786,116 @@ func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessag
 			// Execute the command
 			output, err := ExecuteCommandTool(params.Command, params.Args, timeout)
 			if err != nil {
-				return map[string]interface{}{
+				return map[string]any{
 					"success": false,
 					"error":   err.Error(),
 				}, nil
 			}
 
-			return map[string]interface{}{
+			return map[string]any{
 				"success": true,
 				"output":  output,
 			}, nil
 		}, nil
 
-	case "read_file":
-		// This handler is defined inline for simplicity, matching RegisterDefaultTools
-		return func(args json.RawMessage) (interface{}, error) {
+	case "file_operations":
+		// This handler provides file operations
+		return func(args json.RawMessage) (any, error) {
+			return nil, fmt.Errorf("file_operations handler is not implemented yet")
 			var params struct {
-				FilePath string `json:"file_path"`
-				MaxBytes int    `json:"max_bytes,omitempty"`
+				Operation string `json:"operation"`
+				Path      string `json:"path"`
+				Content   string `json:"content,omitempty"`
 			}
 			if err := json.Unmarshal(args, &params); err != nil {
 				return nil, err
 			}
 
-			// Security check - prevent reading arbitrary files
-			absPath, err := filepath.Abs(params.FilePath)
+			// Get the absolute path for security
+			absPath, err := filepath.Abs(params.Path)
 			if err != nil {
-				return nil, fmt.Errorf("invalid file path: %v", err)
+				return nil, fmt.Errorf("invalid path: %w", err)
 			}
 
-			cwd, err := os.Getwd()
-			if err != nil {
-				return nil, fmt.Errorf("failed to get current working directory: %v", err)
-			}
-
-			// Ensure the path is within the CWD
-			if !strings.HasPrefix(absPath, cwd) {
-				return nil, fmt.Errorf("access denied: cannot read files outside of the current working directory")
-			}
-
-			// Check if file exists
-			fileInfo, err := os.Stat(absPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return map[string]interface{}{
+			switch params.Operation {
+			case "read":
+				data, err := os.ReadFile(absPath)
+				if err != nil {
+					return map[string]any{
 						"success": false,
-						"error":   fmt.Sprintf("file not found: %s", params.FilePath),
+						"error":   err.Error(),
 					}, nil
 				}
-				return nil, fmt.Errorf("failed to access file: %v", err)
+				return map[string]any{
+					"success": true,
+					"content": string(data),
+				}, nil
+
+			case "write":
+				err := os.WriteFile(absPath, []byte(params.Content), 0644)
+				if err != nil {
+					return map[string]any{
+						"success": false,
+						"error":   err.Error(),
+					}, nil
+				}
+				return map[string]any{
+					"success": true,
+					"path":    absPath,
+				}, nil
+
+			case "exists":
+				_, err := os.Stat(absPath)
+				exists := !os.IsNotExist(err)
+				return map[string]any{
+					"exists": exists,
+					"path":   absPath,
+				}, nil
+
+			default:
+				return nil, fmt.Errorf("unknown file operation: %s", params.Operation)
+			}
+		}, nil
+
+	case "read_file":
+		// This handler is defined inline for simplicity, matching RegisterDefaultTools
+		return func(args json.RawMessage) (any, error) {
+			return nil, fmt.Errorf("read_file handler is not implemented yet")
+			var params struct {
+				FilePath string `json:"file_path"`
+			}
+			if err := json.Unmarshal(args, &params); err != nil {
+				return nil, err
 			}
 
-			// Ensure it's a regular file
-			if !fileInfo.Mode().IsRegular() {
-				return map[string]interface{}{
+			// Get the absolute path for security
+			absPath, err := filepath.Abs(params.FilePath)
+			if err != nil {
+				return nil, fmt.Errorf("invalid path: %w", err)
+			}
+
+			data, err := os.ReadFile(absPath)
+			if err != nil {
+				return map[string]any{
 					"success": false,
-					"error":   fmt.Sprintf("not a regular file: %s", params.FilePath),
+					"error":   err.Error(),
 				}, nil
 			}
-
-			// Read file contents
-			buffer, err := os.ReadFile(absPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read file: %v", err)
-			}
-
-			// Limit size if needed
-			maxBytes := params.MaxBytes
-			if maxBytes <= 0 || maxBytes > len(buffer) {
-				maxBytes = len(buffer)
-			}
-			if maxBytes > 1024*1024 { // Limit to 1MB
-				maxBytes = 1024 * 1024
-			}
-
-			// Check if it's a binary file
-			isBinary := false
-			for _, b := range buffer[:maxBytes] {
-				if b == 0 {
-					isBinary = true
-					break
-				}
-			}
-
-			var content string
-			if isBinary {
-				content = "[binary data]"
-			} else {
-				content = string(buffer[:maxBytes])
-			}
-
-			return map[string]interface{}{
-				"success":    true,
-				"content":    content,
-				"bytes_read": maxBytes,
-				"file_size":  len(buffer),
-				"is_binary":  isBinary,
+			return map[string]any{
+				"success": true,
+				"content": string(data),
 			}, nil
 		}, nil
 
 	case "custom":
-		// Keep the custom handler logic as it relies on def.Command
-		if def.Command == "" {
-			return nil, fmt.Errorf("custom handler requires a command in the definition")
-		}
+		// Custom handler - delegates to a specific command
+		return func(args json.RawMessage) (any, error) {
+			// Set a default timeout
+			timeout := 5 * time.Second
 
-		return func(args json.RawMessage) (interface{}, error) {
-			// Write arguments to a temporary file
-			tmpfile, err := os.CreateTemp("", "tool-args-*.json")
-			if err != nil {
-				return nil, fmt.Errorf("failed to create temp file: %w", err)
-			}
-			defer os.Remove(tmpfile.Name())
-
-			if _, err := tmpfile.Write(args); err != nil {
-				tmpfile.Close()
-				return nil, fmt.Errorf("failed to write to temp file: %w", err)
-			}
-			tmpfile.Close()
-
-			// Execute the command with the temp file path as an argument
-			cmdParts := strings.Fields(def.Command)
-			if len(cmdParts) == 0 {
-				return nil, fmt.Errorf("empty command")
-			}
-
-			cmd := exec.Command(cmdParts[0], append(cmdParts[1:], tmpfile.Name())...)
-			var stdout, stderr bytes.Buffer
-			cmd.Stdout = &stdout
-			cmd.Stderr = &stderr
-
-			// Set a timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
-			cmd.Stdout = &stdout
-			cmd.Stderr = &stderr
-
-			if err := cmd.Run(); err != nil {
-				return map[string]interface{}{
-					"success": false,
-					"error":   fmt.Sprintf("command execution failed: %v\nStderr: %s", err, stderr.String()),
-				}, nil
-			}
-
-			// Try to parse output as JSON
-			var result interface{}
-			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-				// If not JSON, return as plain text
-				return map[string]interface{}{
-					"success": true,
-					"output":  stdout.String(),
-				}, nil
-			}
-
-			return map[string]interface{}{
-				"success": true,
-				"result":  result,
-			}, nil
+			// Execute the command with args passed as JSON
+			cmdArgs := []string{string(args)}
+			return ExecuteCommandTool(def.Command, cmdArgs, timeout)
 		}, nil
 
 	default:
@@ -900,172 +903,128 @@ func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessag
 	}
 }
 
-// RegisterDefaultTools registers the default set of tools using the ToolManager
-func RegisterDefaultTools(tm *ToolManager) {
-	// Define parameters and handlers separately for clarity
-	systemInfoParams := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"include_time": map[string]interface{}{
-				"type":        "boolean",
-				"description": "Whether to include the current time",
-			},
-		},
-	}
-	systemInfoHandler := func(args json.RawMessage) (interface{}, error) {
-		var params struct {
-			IncludeTime bool `json:"include_time"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil {
-			return nil, fmt.Errorf("invalid arguments for system_info: %w", err)
-		}
-		result := map[string]interface{}{
-			"hostname": "localhost", // Example value
-		}
-		if params.IncludeTime {
-			result["current_time"] = time.Now().Format(time.RFC3339)
-		}
-		return result, nil
-	}
-
-	execCommandParams := map[string]interface{}{
-		"type":     "object",
-		"required": []string{"command"},
-		"properties": map[string]interface{}{
-			"command": map[string]interface{}{
-				"type":        "string",
-				"description": "The command to execute",
-			},
-			"args": map[string]interface{}{
-				"type": "array",
-				"items": map[string]interface{}{
-					"type": "string",
-				},
-				"description": "Arguments to pass to the command",
-			},
-			"timeout_ms": map[string]interface{}{
-				"type":        "integer",
-				"description": "Timeout in milliseconds (default 5000)",
-				"default":     5000,
-			},
-		},
-	}
-	execCommandHandler := func(args json.RawMessage) (interface{}, error) {
-		var params struct {
-			Command   string   `json:"command"`
-			Args      []string `json:"args,omitempty"`
-			TimeoutMs int      `json:"timeout_ms,omitempty"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil {
-			return nil, fmt.Errorf("invalid arguments for exec_command: %w", err)
-		}
-
-		// Security check
-		dangerousCmds := map[string]bool{
-			"rm": true, "mv": true, "cp": true, "dd": true, "mkfs": true,
-			"reboot": true, "shutdown": true, "wget": true, "curl": true, "chmod": true,
-		}
-		if dangerousCmds[params.Command] {
-			return nil, fmt.Errorf("command '%s' is not allowed for security reasons", params.Command)
-		}
-
-		timeout := time.Duration(params.TimeoutMs) * time.Millisecond
-		if timeout <= 0 {
-			timeout = 5 * time.Second // Default timeout
-		}
-
-		output, err := ExecuteCommandTool(params.Command, params.Args, timeout)
-		if err != nil {
-			return map[string]interface{}{"success": false, "error": err.Error()}, nil // Return error info in response
-		}
-		return map[string]interface{}{"success": true, "output": output}, nil
-	}
-
-	readFileParams := map[string]interface{}{
-		"type":     "object",
-		"required": []string{"file_path"},
-		"properties": map[string]interface{}{
-			"file_path": map[string]interface{}{
-				"type":        "string",
-				"description": "The path to the file to read (relative to working directory)",
-			},
-			"max_bytes": map[string]interface{}{
-				"type":        "integer",
-				"description": "Maximum number of bytes to read (default 1MB)",
-				"default":     1024 * 1024,
-			},
-		},
-	}
-	readFileHandler := func(args json.RawMessage) (interface{}, error) {
-		var params struct {
-			FilePath string `json:"file_path"`
-			MaxBytes int    `json:"max_bytes,omitempty"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil {
-			return nil, fmt.Errorf("invalid arguments for read_file: %w", err)
-		}
-
-		// Security check: Ensure path is relative and within CWD
-		absPath, err := filepath.Abs(params.FilePath)
-		if err != nil {
-			return nil, fmt.Errorf("invalid file path: %w", err)
-		}
-		cwd, _ := os.Getwd() // Ignore error getting CWD for now
-		if !strings.HasPrefix(absPath, cwd) {
-			return nil, fmt.Errorf("access denied: path must be within the current working directory")
-		}
-
-		fileInfo, err := os.Stat(absPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return map[string]interface{}{"success": false, "error": "file not found"}, nil
+// RegisterDefaultTools registers a set of default tools with the tool manager
+func (tm *ToolManager) RegisterDefaultTools() error {
+	// System Info tool
+	err := tm.RegisterTool(
+		"system_info",
+		"Get information about the system",
+		json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"include_time": {
+					"type": "boolean",
+					"description": "Whether to include the current time in the response"
+				}
 			}
-			return nil, fmt.Errorf("failed to access file: %w", err)
-		}
-		if !fileInfo.Mode().IsRegular() {
-			return map[string]interface{}{"success": false, "error": "not a regular file"}, nil
-		}
+		}`),
+		func(args json.RawMessage) (any, error) {
+			var params struct {
+				IncludeTime bool `json:"include_time"`
+			}
+			if err := json.Unmarshal(args, &params); err != nil {
+				return nil, err
+			}
 
-		maxBytes := params.MaxBytes
-		if maxBytes <= 0 || maxBytes > 1024*1024 { // Enforce 1MB limit
-			maxBytes = 1024 * 1024
-		}
-		if int64(maxBytes) > fileInfo.Size() {
-			maxBytes = int(fileInfo.Size())
-		}
+			result := map[string]any{
+				"hostname": "localhost",
+			}
 
-		buffer, err := os.ReadFile(absPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read file: %w", err)
-		}
+			if params.IncludeTime {
+				result["current_time"] = time.Now().Format(time.RFC3339)
+			}
 
-		content := buffer[:maxBytes]
-		isBinary := bytes.Contains(content, []byte{0}) // Simple binary check
-
-		var contentStr string
-		if isBinary {
-			contentStr = "[binary data]"
-		} else {
-			contentStr = string(content)
-		}
-
-		return map[string]interface{}{
-			"success":    true,
-			"content":    contentStr,
-			"bytes_read": len(content),
-			"file_size":  fileInfo.Size(),
-			"is_binary":  isBinary,
-		}, nil
+			return result, nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register system_info tool: %w", err)
 	}
 
-	// Register the tools, handling potential errors
-	if err := tm.RegisterTool("system_info", "Get information about the system", systemInfoParams, systemInfoHandler); err != nil {
-		log.Printf("Warning: Failed to register default tool 'system_info': %v", err)
+	// Command Execution tool
+	err = tm.RegisterTool(
+		"exec_command",
+		"Execute a shell command",
+		json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"command": {
+					"type": "string",
+					"description": "The command to execute"
+				},
+				"args": {
+					"type": "array",
+					"description": "Arguments to pass to the command",
+					"items": {
+						"type": "string"
+					}
+				},
+				"timeout_ms": {
+					"type": "integer",
+					"description": "Timeout in milliseconds (default: 5000)"
+				}
+			},
+			"required": ["command"]
+		}`),
+		func(args json.RawMessage) (any, error) {
+			var params struct {
+				Command   string   `json:"command"`
+				Args      []string `json:"args,omitempty"`
+				TimeoutMs int      `json:"timeout_ms,omitempty"`
+			}
+			if err := json.Unmarshal(args, &params); err != nil {
+				return nil, err
+			}
+
+			// Security check - restrict dangerous commands
+			dangerousCmds := map[string]bool{
+				"rm": true, "mv": true, "cp": true, "dd": true,
+				"mkfs": true, "reboot": true, "shutdown": true,
+				"wget": true, "curl": true, "chmod": true,
+			}
+
+			if dangerousCmds[params.Command] {
+				return nil, fmt.Errorf("command '%s' is not allowed for security reasons", params.Command)
+			}
+
+			// Verify the command exists in PATH
+			execPath, found := findExecutableInPath(params.Command)
+			if !found {
+				log.Printf("Warning: Command '%s' not found in PATH", params.Command)
+				return map[string]any{
+					"success": false,
+					"error":   fmt.Sprintf("Command '%s' not found. Make sure it's installed and in your PATH.", params.Command),
+				}, nil
+			}
+
+			// Use the full path to the executable
+			log.Printf("Using executable at: %s", execPath)
+			params.Command = execPath
+
+			// Set a default timeout if none provided
+			timeout := time.Duration(params.TimeoutMs) * time.Millisecond
+			if timeout == 0 {
+				timeout = 5 * time.Second // Default timeout
+			}
+
+			// Execute the command
+			output, err := ExecuteCommandTool(params.Command, params.Args, timeout)
+			if err != nil {
+				return map[string]any{
+					"success": false,
+					"error":   err.Error(),
+				}, nil
+			}
+
+			return map[string]any{
+				"success": true,
+				"output":  output,
+			}, nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register exec_command tool: %w", err)
 	}
-	if err := tm.RegisterTool("exec_command", "Execute a shell command", execCommandParams, execCommandHandler); err != nil {
-		log.Printf("Warning: Failed to register default tool 'exec_command': %v", err)
-	}
-	if err := tm.RegisterTool("read_file", "Read a file from the filesystem", readFileParams, readFileHandler); err != nil {
-		log.Printf("Warning: Failed to register default tool 'read_file': %v", err)
-	}
+
+	return nil
 }

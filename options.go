@@ -3,6 +3,7 @@ package aistudio
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/tmc/aistudio/api"
 )
@@ -139,6 +140,14 @@ func WithTools(enabled bool) Option {
 	}
 }
 
+// WithToolApproval enables or disables approval requirement for tool calls.
+func WithToolApproval(requireApproval bool) Option {
+	return func(m *Model) error {
+		m.requireApproval = requireApproval
+		return nil
+	}
+}
+
 // WithToolsFile loads tools from a JSON file.
 func WithToolsFile(filePath string) Option {
 	return func(m *Model) error {
@@ -170,6 +179,86 @@ func WithToolsFile(filePath string) Option {
 func WithSystemPrompt(prompt string) Option {
 	return func(m *Model) error {
 		m.systemPrompt = prompt
+		return nil
+	}
+}
+
+// WithTemperature sets the temperature for text generation (controls randomness).
+func WithTemperature(temp float32) Option {
+	return func(m *Model) error {
+		m.temperature = temp
+		return nil
+	}
+}
+
+// WithTopP sets the top-p value for text generation (controls diversity).
+func WithTopP(topP float32) Option {
+	return func(m *Model) error {
+		m.topP = topP
+		return nil
+	}
+}
+
+// WithTopK sets the top-k value for text generation.
+func WithTopK(topK int32) Option {
+	return func(m *Model) error {
+		m.topK = topK
+		return nil
+	}
+}
+
+// WithMaxOutputTokens sets the maximum number of tokens to generate.
+func WithMaxOutputTokens(maxTokens int32) Option {
+	return func(m *Model) error {
+		m.maxOutputTokens = maxTokens
+		return nil
+	}
+}
+
+// WithWebSearch enables or disables web search capabilities.
+func WithWebSearch(enabled bool) Option {
+	return func(m *Model) error {
+		m.enableWebSearch = enabled
+		return nil
+	}
+}
+
+// WithCodeExecution enables or disables code execution capabilities.
+func WithCodeExecution(enabled bool) Option {
+	return func(m *Model) error {
+		m.enableCodeExecution = enabled
+		return nil
+	}
+}
+
+// WithResponseMimeType sets the expected response MIME type (e.g., application/json).
+func WithResponseMimeType(mimeType string) Option {
+	return func(m *Model) error {
+		m.responseMimeType = mimeType
+		return nil
+	}
+}
+
+// WithResponseSchema sets a schema for the response structure from a file.
+func WithResponseSchema(schemaFile string) Option {
+	return func(m *Model) error {
+		m.responseSchemaFile = schemaFile
+		return nil
+	}
+}
+
+// WithDisplayTokenCounts enables or disables displaying token counts in the UI.
+func WithDisplayTokenCounts(enabled bool) Option {
+	return func(m *Model) error {
+		m.displayTokenCounts = enabled
+		return nil
+	}
+}
+
+// WithGlobalTimeout sets a global timeout for the entire program.
+func WithGlobalTimeout(timeout time.Duration) Option {
+	return func(m *Model) error {
+		m.globalTimeout = timeout
 		return nil
 	}
 }

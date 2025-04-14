@@ -62,3 +62,42 @@ func (m *Model) FindMessageWithAudioData(audioData []byte) (int, bool) {
 	}
 	return -1, false
 }
+
+// StopCurrentAudio stops any currently playing audio and clears buffers.
+// Returns true if audio was playing and was stopped.
+func (m *Model) StopCurrentAudio() bool {
+	if !m.isAudioProcessing || !m.enableAudio {
+		return false
+	}
+
+	log.Println("Explicitly stopping current audio playback")
+
+	// Clear audio buffer to stop ongoing accumulation
+	m.consolidatedAudioData = nil
+
+	// Stop any timers
+	if m.bufferTimer != nil {
+		m.bufferTimer.Stop()
+		m.bufferTimer = nil
+	}
+
+	// Mark the current message's audio as complete
+	if m.currentAudio != nil {
+		messageIdx := m.currentAudio.MessageIndex
+
+		// Update the message state if applicable
+		if messageIdx >= 0 && messageIdx < len(m.messages) {
+			m.messages[messageIdx].IsPlaying = false
+			m.messages[messageIdx].IsPlayed = true
+		}
+
+		// Clear the current audio
+		m.currentAudio.IsComplete = true
+		m.currentAudio = nil
+	}
+
+	// Mark that we're no longer processing audio
+	m.isAudioProcessing = false
+
+	return true
+}

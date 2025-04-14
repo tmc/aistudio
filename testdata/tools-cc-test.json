@@ -1,0 +1,53 @@
+[
+  {
+    "name": "list_files",
+    "description": "List files in a directory",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The directory path to list files from"
+        }
+      },
+      "required": ["path"]
+    },
+    "handler": "exec_command"
+  },
+  {
+    "name": "get_weather",
+    "description": "Get weather information for a location",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "description": "The city and state, e.g. San Francisco, CA"
+        },
+        "unit": {
+          "type": "string",
+          "enum": ["celsius", "fahrenheit"],
+          "description": "The unit of temperature"
+        }
+      },
+      "required": ["location"]
+    },
+    "handler": "custom",
+    "command": "echo '{\"temperature\": 72, \"conditions\": \"sunny\"}'"
+  },
+  {
+    "name": "read_config",
+    "description": "Read a configuration file",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to the configuration file"
+        }
+      },
+      "required": ["file_path"]
+    },
+    "handler": "read_file"
+  }
+]

@@ -1,12 +1,15 @@
 package aistudio
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -25,7 +28,7 @@ func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Add
 	// Keep sender header even if content is empty
 	header := senderStyle.Render(msg.Sender + ":")
 
-	cleanedContent := strings.TrimSpace(msg.Content)
+	cleanedContent := msg.Content
 
 	var audioLine strings.Builder
 	if msg.HasAudio {
@@ -149,22 +152,59 @@ func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Add
 			finalMsg.WriteString(audioString)
 			finalMsg.WriteString("\n")
 		}
-	} else if msg.IsToolCall {
-		// For tool calls, show the content and a note about the tool
+	} else if msg.IsToolCall || msg.FunctionCall != nil {
+		// For tool calls or function calls, show the content and info about the tool
 		if cleanedContent != "" {
 			finalMsg.WriteString(cleanedContent)
 			finalMsg.WriteString("\n")
 		}
-		if msg.ToolCall != nil {
-			toolCallStr := fmt.Sprintf("Tool: %s", msg.ToolCall.Name) // Corrected field name
+
+		// Handle regular tool calls
+		if msg.IsToolCall && msg.ToolCall != nil {
+			toolCallStr := fmt.Sprintf("Tool: %s", msg.ToolCall.Name)
 			toolCallStr = toolCallStyle.Render(toolCallStr)
 			finalMsg.WriteString(toolCallStr)
 			finalMsg.WriteString("\n")
+
+			// Show tool arguments if available
+			if len(msg.ToolCall.Arguments) > 0 {
+				var args bytes.Buffer
+				if err := json.Indent(&args, msg.ToolCall.Arguments, "", "  "); err != nil {
+					args.Write(msg.ToolCall.Arguments) // Fallback if formatting fails
+				}
+
+				finalMsg.WriteString("Arguments:\n")
+				finalMsg.WriteString("```json\n")
+				finalMsg.WriteString(args.String())
+				finalMsg.WriteString("\n```\n")
+			}
+		}
+
+		// Handle BidiGenerateContent function calls
+		if msg.FunctionCall != nil {
+			callStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")) // Teal for function calls
+
+			funcName := msg.FunctionCall.Name
+			finalMsg.WriteString(callStyle.Render(fmt.Sprintf("📞 Function Call: %s", funcName)))
+			finalMsg.WriteString("\n")
+
+			// Format and display arguments
+			if msg.FunctionCall.Args != nil {
+				argsBytes, err := json.MarshalIndent(msg.FunctionCall.Args, "", "  ")
+				if err != nil {
+					argsBytes = []byte(fmt.Sprintf("%v", msg.FunctionCall.Args))
+				}
+
+				finalMsg.WriteString("Arguments:\n")
+				finalMsg.WriteString("```json\n")
+				finalMsg.WriteString(string(argsBytes))
+				finalMsg.WriteString("\n```\n")
+			}
 		}
 	} else if msg.IsExecutableCode {
 		// For executable code, show content and the code block
 		codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // Blue for code
-		
+
 		if cleanedContent != "" {
 			finalMsg.WriteString(cleanedContent)
 			finalMsg.WriteString("\n")
@@ -200,6 +240,89 @@ func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Add
 			finalMsg.WriteString(cleanedContent)
 			finalMsg.WriteString("\n")
 		}
+
+		// Display safety ratings if present
+		if len(msg.SafetyRatings) > 0 {
+			safetyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // Orange for safety info
+
+			finalMsg.WriteString(safetyStyle.Render("Safety Ratings:"))
+			finalMsg.WriteString("\n")
+
+			for _, rating := range msg.SafetyRatings {
+				var ratingStyle lipgloss.Style
+
+				// Color-code based on probability
+				switch rating.Probability {
+				case "HIGH":
+					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // Red for high
+				case "MEDIUM":
+					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // Orange for medium
+				case "LOW":
+					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // Yellow for low
+				default:
+					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // Green for negligible/unspecified
+				}
+
+				ratingStr := fmt.Sprintf("• %s: %s", rating.Category, rating.Probability)
+				if rating.Score > 0 {
+					ratingStr += fmt.Sprintf(" (%.3f)", rating.Score)
+				}
+				if rating.Blocked {
+					ratingStr += " [BLOCKED]"
+				}
+
+				finalMsg.WriteString(ratingStyle.Render(ratingStr))
+				finalMsg.WriteString("\n")
+			}
+		}
+
+		// Display grounding metadata if present
+		if msg.HasGroundingMetadata && msg.GroundingMetadata != nil {
+			gmData := msg.GroundingMetadata
+
+			// Display grounding chunks if available
+			if len(gmData.Chunks) > 0 {
+				chunkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")) // Light blue for chunks
+				finalMsg.WriteString(chunkStyle.Render("Grounding Sources:"))
+				finalMsg.WriteString("\n")
+
+				for i, chunk := range gmData.Chunks {
+					chunkStyle := lipgloss.NewStyle()
+					if chunk.Selected {
+						chunkStyle = chunkStyle.Bold(true)
+					}
+
+					chunkInfo := fmt.Sprintf("%d. %s", i+1, chunk.Title)
+					if chunk.URI != "" {
+						chunkInfo += fmt.Sprintf(" (%s)", chunk.URI)
+					}
+
+					finalMsg.WriteString(chunkStyle.Render(chunkInfo))
+					finalMsg.WriteString("\n")
+				}
+			}
+
+			// Display web search queries if available
+			if len(gmData.WebSearchQueries) > 0 {
+				queryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")) // Teal for queries
+				finalMsg.WriteString(queryStyle.Render("Suggested Search Queries:"))
+				finalMsg.WriteString("\n")
+
+				for i, query := range gmData.WebSearchQueries {
+					finalMsg.WriteString(fmt.Sprintf("%d. %s", i+1, query))
+					finalMsg.WriteString("\n")
+				}
+			}
+		}
+
+		// Display token counts if enabled and available
+		if m.displayTokenCounts && msg.HasTokenInfo {
+			tokenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Faint(true) // Gray, faint for token counts
+			tokenInfo := fmt.Sprintf("Tokens: %d prompt + %d response = %d total",
+				msg.PromptTokenCount, msg.ResponseTokenCount, msg.TotalTokenCount)
+			finalMsg.WriteString(tokenStyle.Render(tokenInfo))
+			finalMsg.WriteString("\n")
+		}
 	}
 
 	// Add an extra newline for spacing between messages
@@ -221,6 +344,212 @@ func (m *Model) formatAllMessages() string {
 	}
 	// Use a single newline to join, as formatMessageText now adds trailing newlines
 	return strings.Join(formattedMessages, "")
+}
+
+// renderToolApprovalModal renders a modal for approving a tool call
+func (m *Model) renderToolApprovalModal() string {
+	if !m.showToolApproval || len(m.pendingToolCalls) == 0 || m.approvalIndex >= len(m.pendingToolCalls) {
+		return ""
+	}
+
+	// Get the current tool call being approved
+	toolCall := m.pendingToolCalls[m.approvalIndex]
+	
+	// Create styles for the modal
+	boxStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Padding(1, 3).
+		Width(m.width - 10).
+		Align(lipgloss.Center)
+		
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("63")).
+		MarginBottom(1)
+		
+	toolNameStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("39")).
+		Bold(true)
+		
+	buttonStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("0")).
+		Background(lipgloss.Color("63")).
+		Padding(0, 2).
+		MarginRight(2)
+		
+	buttonDangerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("0")).
+		Background(lipgloss.Color("160")).
+		Padding(0, 2).
+		MarginRight(2)
+		
+	// Format arguments for display
+	var argsBuf bytes.Buffer
+	if err := json.Indent(&argsBuf, toolCall.Arguments, "", "  "); err != nil {
+		argsBuf.Write(toolCall.Arguments)
+	}
+	
+	// Build the modal content
+	var builder strings.Builder
+	builder.WriteString(titleStyle.Render("Tool Call Approval Required"))
+	builder.WriteString("\n\n")
+	builder.WriteString(fmt.Sprintf("Tool: %s", toolNameStyle.Render(toolCall.Name)))
+	builder.WriteString("\n\n")
+	builder.WriteString("Arguments:\n")
+	builder.WriteString("```json\n")
+	builder.WriteString(argsBuf.String())
+	builder.WriteString("\n```\n\n")
+	
+	// Add progress indicator if there are multiple pending tool calls
+	if len(m.pendingToolCalls) > 1 {
+		builder.WriteString(fmt.Sprintf("Tool call %d of %d\n\n", m.approvalIndex+1, len(m.pendingToolCalls)))
+	}
+	
+	// Add action buttons
+	builder.WriteString(buttonStyle.Render("Y: Approve"))
+	builder.WriteString(" ")
+	builder.WriteString(buttonDangerStyle.Render("N: Deny"))
+	if len(m.pendingToolCalls) > 1 && m.approvalIndex < len(m.pendingToolCalls)-1 {
+		builder.WriteString(" ")
+		builder.WriteString(buttonStyle.Render("Tab: Next"))
+	}
+	
+	return boxStyle.Render(builder.String())
+}
+
+// convertSafetyRating converts API safety rating to our display format
+func convertSafetyRating(apiRating *generativelanguagepb.SafetyRating) *SafetyRating {
+	if apiRating == nil {
+		return nil
+	}
+
+	// Convert category to a simplified string representation
+	category := fmt.Sprintf("%s", apiRating.Category)
+	// Remove the prefix if present
+	category = strings.TrimPrefix(category, "HARM_CATEGORY_")
+
+	// Convert probability to string representation
+	probability := fmt.Sprintf("%s", apiRating.Probability)
+
+	// Check if this rating is blocking content - high and medium are generally considered blocking
+	blocked := apiRating.Probability == generativelanguagepb.SafetyRating_HIGH ||
+		apiRating.Probability == generativelanguagepb.SafetyRating_MEDIUM
+
+	return &SafetyRating{
+		Category:    category,
+		Probability: probability,
+		Score:       0, // API doesn't provide probability score directly
+		Blocked:     blocked,
+	}
+}
+
+// convertGroundingMetadata converts API grounding metadata to our display format
+func (m *Model) convertGroundingMetadata(apiMetadata *generativelanguagepb.GroundingMetadata) *GroundingMetadata {
+	if apiMetadata == nil {
+		return nil
+	}
+
+	result := &GroundingMetadata{
+		Chunks:              make([]*GroundingChunk, 0),
+		Supports:            make([]*GroundingSupport, 0),
+		WebSearchQueries:    make([]string, 0),
+		HasSearchEntryPoint: false,
+	}
+
+	// Convert grounding chunks
+	for i, chunk := range apiMetadata.GetGroundingChunks() {
+		displayChunk := &GroundingChunk{
+			ID:       fmt.Sprintf("chunk-%d", i),
+			Selected: false,
+		}
+
+		// Handle web chunk
+		if web := chunk.GetWeb(); web != nil {
+			displayChunk.IsWeb = true
+			displayChunk.URI = web.GetUri()
+			displayChunk.Title = web.GetTitle()
+		}
+
+		result.Chunks = append(result.Chunks, displayChunk)
+	}
+
+	// Convert web search queries
+	result.WebSearchQueries = apiMetadata.GetWebSearchQueries()
+
+	// Handle search entry point
+	if entryPoint := apiMetadata.GetSearchEntryPoint(); entryPoint != nil {
+		result.HasSearchEntryPoint = true
+		result.SearchEntryPoint = &SearchEntryPoint{
+			RenderedContent: entryPoint.GetRenderedContent(),
+			HasSDKBlob:      len(entryPoint.GetSdkBlob()) > 0,
+		}
+	}
+
+	// Handle support information
+	for _, support := range apiMetadata.GetGroundingSupports() {
+		// Convert []int32 to []int for ChunkIndices
+		int32Indices := support.GetGroundingChunkIndices()
+		intIndices := make([]int, len(int32Indices))
+		for i, idx := range int32Indices {
+			intIndices[i] = int(idx)
+		}
+
+		displaySupport := &GroundingSupport{
+			Text:         "", // Will be extracted from segment information
+			ChunkIndices: intIndices,
+			Confidence:   support.GetConfidenceScores(),
+		}
+
+		// Extract text from segment if available
+		if seg := support.GetSegment(); seg != nil {
+			displaySupport.Text = seg.GetText()
+		}
+
+		// Associate chunks with this support
+		displaySupport.ChunksSelected = make([]*GroundingChunk, 0)
+		for _, idx := range displaySupport.ChunkIndices {
+			if idx >= 0 && int(idx) < len(result.Chunks) {
+				// Mark the chunk as selected
+				result.Chunks[idx].Selected = true
+				displaySupport.ChunksSelected = append(displaySupport.ChunksSelected, result.Chunks[idx])
+			}
+		}
+
+		result.Supports = append(result.Supports, displaySupport)
+	}
+
+	return result
+}
+
+// convertFunctionCall converts API function call to our display format
+func convertFunctionCall(apiCall *generativelanguagepb.FunctionCall) *FormattedFunctionCall {
+	if apiCall == nil {
+		return nil
+	}
+
+	// Parse arguments to structured data
+	var argsMap interface{}
+	argsStr := ""
+
+	if apiCall.Args != nil {
+		// Try to marshal the args to a formatted JSON string
+		if argsBytes, err := json.MarshalIndent(apiCall.Args, "", "  "); err == nil {
+			argsStr = string(argsBytes)
+			// Also unmarshal to a map for structured access
+			json.Unmarshal(argsBytes, &argsMap)
+		} else {
+			// Fallback for display
+			argsStr = fmt.Sprintf("%v", apiCall.Args)
+		}
+	}
+
+	return &FormattedFunctionCall{
+		Name:         apiCall.Name,
+		Arguments:    argsStr,
+		ArgumentsMap: argsMap,
+		Raw:          apiCall,
+	}
 }
 
 // headerView renders the header for the UI

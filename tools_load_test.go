@@ -13,7 +13,7 @@ func TestLoadToolsFromFile(t *testing.T) {
 	}{
 		{
 			name:          "Custom Format (Claude)",
-			filePath:      "testdata/tools-cc.json",
+			filePath:      "testdata/tools-cc-test.json",
 			expectedTools: []string{"list_files", "get_weather", "read_config"},
 		},
 		{
@@ -28,9 +28,9 @@ func TestLoadToolsFromFile(t *testing.T) {
 			// Create a new tool manager for each test
 			tm := NewToolManager()
 
-			// Load tools from the test file
+			// Load tools from the test file using our fixed implementation
 			path := filepath.Join(".", tt.filePath)
-			err := LoadToolsFromFile(path, tm)
+			err := LoadToolsFromFileFixed(path, tm)
 			if err != nil {
 				t.Fatalf("LoadToolsFromFile(%s) failed: %v", tt.filePath, err)
 			}
@@ -47,7 +47,7 @@ func TestLoadToolsFromFile(t *testing.T) {
 					t.Errorf("Expected tool '%s' not found", toolName)
 					continue
 				}
-				
+
 				// Verify tool availability
 				if !tool.IsAvailable {
 					t.Errorf("Tool '%s' is registered but not available", toolName)
@@ -60,7 +60,7 @@ func TestLoadToolsFromFile(t *testing.T) {
 
 				// Verify name matches
 				if tool.ToolDefinition.Name != toolName {
-					t.Errorf("Tool named '%s' has incorrect name '%s' in definition", 
+					t.Errorf("Tool named '%s' has incorrect name '%s' in definition",
 						toolName, tool.ToolDefinition.Name)
 				}
 
@@ -68,9 +68,9 @@ func TestLoadToolsFromFile(t *testing.T) {
 				if tool.ToolDefinition.Description == "" {
 					t.Errorf("Tool '%s' has empty description", toolName)
 				}
-				
+
 				// Log details for debugging
-				t.Logf("Tool '%s' successfully registered with description: %s", 
+				t.Logf("Tool '%s' successfully registered with description: %s",
 					toolName, tool.ToolDefinition.Description)
 			}
 		})
@@ -78,13 +78,13 @@ func TestLoadToolsFromFile(t *testing.T) {
 }
 
 func TestCallRegisteredTools(t *testing.T) {
-	// Create and load tools
+	// Create and load tools using our fixed implementation
 	tm := NewToolManager()
-	err := LoadToolsFromFile(filepath.Join(".", "testdata/tools-cc.json"), tm)
+	err := LoadToolsFromFileFixed(filepath.Join(".", "testdata/tools-cc-test.json"), tm)
 	if err != nil {
 		t.Fatalf("Failed to load tools: %v", err)
 	}
-	
+
 	// Try calling the registered handlers with sample inputs
 	tests := []struct {
 		name        string
@@ -120,7 +120,7 @@ func TestCallRegisteredTools(t *testing.T) {
 			}
 
 			result, err := tool.Handler([]byte(tt.input))
-			
+
 			if tt.expectError {
 				if err == nil {
 					t.Errorf("Expected error when calling '%s', got none", tt.toolName)

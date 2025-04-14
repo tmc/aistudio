@@ -14,7 +14,9 @@ import (
 	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // Client wraps the Google Generative Language client.
@@ -33,11 +35,14 @@ func (c *Client) SetHTTPTransport(transport http.RoundTripper) {
 // ToolDefinition represents a tool definition in a JSON file
 type ToolDefinition = generativelanguagepb.FunctionDeclaration
 
+// ToolResult
+type ToolResult = generativelanguagepb.FunctionResponse
+
 // RegisteredTool represents a tool registered with the application that can be called
 type RegisteredTool struct {
-	ToolDefinition ToolDefinition                                  // The tool definition
-	Handler        func(args json.RawMessage) (interface{}, error) // Function that handles the tool call
-	IsAvailable    bool                                            // Whether the tool is currently available
+	ToolDefinition ToolDefinition                          // The tool definition
+	Handler        func(args json.RawMessage) (any, error) // Function that handles the tool call
+	IsAvailable    bool                                    // Whether the tool is currently available
 }
 
 // ClientConfig holds configuration passed during stream initialization.
@@ -47,9 +52,20 @@ type ClientConfig struct {
 	VoiceName    string // Informational, may not be directly usable in v1alpha setup
 	SystemPrompt string // System prompt to use for the conversation
 
-	// todo: enable web search
-	// todo: enable code execution
-	// todo: enable structured output
+	// Generation configuration parameters
+	Temperature     float32 // Controls randomness (0.0-1.0)
+	TopP            float32 // Controls diversity (0.0-1.0)
+	TopK            int32   // Number of highest probability tokens to consider
+	MaxOutputTokens int32   // Maximum number of tokens to generate
+
+	// Feature flags
+	EnableWebSearch     bool   // Enable web search/grounding capabilities
+	EnableCodeExecution bool   // Enable code execution capabilities
+	ResponseMimeType    string // MIME type of the expected response (e.g., "application/json")
+	ResponseSchemaFile  string // Path to JSON schema file defining response structure
+
+	// Display options
+	DisplayTokenCounts bool // Whether to display token counts in the UI
 
 	ToolDefinitions []ToolDefinition // Tool definitions for the session
 }
@@ -63,11 +79,23 @@ type StreamOutput struct {
 	ExecutableCode      *generativelanguagepb.ExecutableCode      // Executable code data
 	CodeExecutionResult *generativelanguagepb.CodeExecutionResult // Executable code result data
 
-	// TODO: add other fields
+	// Additional feedback and metadata
+	SafetyRatings     []*generativelanguagepb.SafetyRating    // Safety ratings for content
+	GroundingMetadata *generativelanguagepb.GroundingMetadata // Grounding metadata
+
+	// Usage information
+	PromptTokenCount    int32 // Number of tokens in the prompt (only available at end of response)
+	CandidateTokenCount int32 // Number of tokens in the response (only available at end of response)
+	TotalTokenCount     int32 // Total tokens used (prompt + response, only available at end of response)
+	IsFinalChunk        bool  // Whether this is the final chunk in the response
 }
 
 // InitClient initializes the underlying Google Cloud Generative Language client.
 func (c *Client) InitClient(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("context cannot be nil")
+	}
+
 	if c.GenAI != nil {
 		return nil
 	} // Prevent re-initialization
@@ -152,6 +180,7 @@ func (c *Client) Close() error {
 // InitStreamGenerateContent starts a streaming session using StreamGenerateContent.
 // This is a one-way streaming method and not true bidirectional streaming.
 func (c *Client) InitStreamGenerateContent(ctx context.Context, config ClientConfig) (generativelanguagepb.GenerativeService_StreamGenerateContentClient, error) {
+	return nil, fmt.Errorf("only bidi streaming is supported at the moment")
 	if c.GenAI == nil {
 		log.Println("InitStreamGenerateContent: Client not initialized, attempting InitClient...")
 		if err := c.InitClient(ctx); err != nil {
@@ -167,16 +196,25 @@ func (c *Client) InitStreamGenerateContent(ctx context.Context, config ClientCon
 	// Add system prompt if defined
 	// Create the content request
 	request := &generativelanguagepb.GenerateContentRequest{
-		Model:            config.ModelName,
-		Contents:         contents,
-		GenerationConfig: &generativelanguagepb.GenerationConfig{},
+		Model:    config.ModelName,
+		Contents: contents,
 	}
 
 	// Set up audio config if enabled
 	if config.EnableAudio {
 		log.Printf("Enabling audio output with voice: %s", config.VoiceName)
 		if request.GenerationConfig == nil {
-			request.GenerationConfig = &generativelanguagepb.GenerationConfig{}
+			request.GenerationConfig = &generativelanguagepb.GenerationConfig{
+				SpeechConfig: &generativelanguagepb.SpeechConfig{
+					VoiceConfig: &generativelanguagepb.VoiceConfig{
+						VoiceConfig: &generativelanguagepb.VoiceConfig_PrebuiltVoiceConfig{
+							PrebuiltVoiceConfig: &generativelanguagepb.PrebuiltVoiceConfig{
+								VoiceName: &config.VoiceName,
+							},
+						},
+					},
+				},
+			}
 		}
 	}
 
@@ -194,6 +232,10 @@ func (c *Client) InitStreamGenerateContent(ctx context.Context, config ClientCon
 
 // InitBidiStream starts a bidirectional streaming session using BidiGenerateContent.
 func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (generativelanguagepb.GenerativeService_BidiGenerateContentClient, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("context cannot be nil")
+	}
+
 	if c.GenAI == nil {
 		log.Println("InitBidiStream: Client not initialized, attempting InitClient...")
 		if err := c.InitClient(ctx); err != nil {
@@ -237,38 +279,72 @@ func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (gener
 
 	log.Printf("Using API tools: %v", tools)
 
-	// Send setup message to the server:
-	setupMessage := &generativelanguagepb.BidiGenerateContentSetup{
-		Model: config.ModelName,
-		// Note: Audio config is not fully supported in v1alpha
-		// AudioConfig: &generativelanguagepb.AudioConfig{
-		//	Voice: config.VoiceName,
-		// },
-		SystemInstruction: textContent(config.SystemPrompt),
-		//SystemInstruction: textContent("You are a pirate captain. You are very rude and aggressive. You are not a friendly assistant."),
-		Tools: tools,
-
-		GenerationConfig: &generativelanguagepb.GenerationConfig{
-			// todo: response schema
-			SpeechConfig: &generativelanguagepb.SpeechConfig{
-				VoiceConfig: &generativelanguagepb.VoiceConfig{
-					VoiceConfig: &generativelanguagepb.VoiceConfig_PrebuiltVoiceConfig{
-						PrebuiltVoiceConfig: &generativelanguagepb.PrebuiltVoiceConfig{
-							VoiceName: &config.VoiceName,
-						},
+	// Set up GenerationConfig with conditional fields
+	genConfig := &generativelanguagepb.GenerationConfig{}
+	// genConfig.Temperature = &config.Temperature
+	// if config.TopP > 0 {
+	// 	genConfig.TopP = &config.TopP
+	// }
+	// if config.TopK > 0 {
+	// 	genConfig.TopK = &config.TopK
+	// }
+	// if config.MaxOutputTokens > 0 {
+	// 	genConfig.MaxOutputTokens = &config.MaxOutputTokens
+	// }
+	// Only set voice config if VoiceName is specified
+	if config.VoiceName != "" {
+		genConfig.SpeechConfig = &generativelanguagepb.SpeechConfig{
+			VoiceConfig: &generativelanguagepb.VoiceConfig{
+				VoiceConfig: &generativelanguagepb.VoiceConfig_PrebuiltVoiceConfig{
+					PrebuiltVoiceConfig: &generativelanguagepb.PrebuiltVoiceConfig{
+						VoiceName: &config.VoiceName,
 					},
 				},
 			},
-		},
+		}
+	}
+	// Send setup message to the server:
+	setupMessage := &generativelanguagepb.BidiGenerateContentSetup{
+		Model:             config.ModelName,
+		SystemInstruction: textContent(config.SystemPrompt),
+		Tools:             tools,
+		GenerationConfig:  genConfig,
 	}
 
-	if config.EnableAudio {
-		log.Printf("Enabling audio output with voice: %s", config.VoiceName)
-		// setupMessage.GenerationConfig.ResponseModalities = []generativelanguagepb.GenerationConfig_Modality{
-		// 	generativelanguagepb.GenerationConfig_TEXT,
-		// 	generativelanguagepb.GenerationConfig_AUDIO,
-		// }
+	// Set response MIME type if specified
+	if config.ResponseMimeType != "" {
+		// setupMessage.GenerationConfig.ResponseMimeType = config.ResponseMimeType
 	}
+
+	// If output schema is specified, set it in the setup message, and set the mime type to application/json:
+	if config.ResponseSchemaFile != "" {
+		schema, err := os.ReadFile(config.ResponseSchemaFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response schema file: %w", err)
+		}
+		schemaObj := &generativelanguagepb.Schema{}
+		m := protojson.UnmarshalOptions{}
+		if err := m.Unmarshal(schema, schemaObj); err != nil {
+			return nil, fmt.Errorf("failed to parse response schema: %w", err)
+		}
+		log.Printf("Parsed response schema: %s", prototext.Format(schemaObj))
+		setupMessage.GenerationConfig.ResponseSchema = schemaObj
+	}
+
+	if setupMessage.GenerationConfig == nil {
+		setupMessage.GenerationConfig = &generativelanguagepb.GenerationConfig{}
+	}
+	setupMessage.GenerationConfig.ResponseModalities = []generativelanguagepb.GenerationConfig_Modality{
+		generativelanguagepb.GenerationConfig_TEXT,
+	}
+	if config.EnableAudio {
+		setupMessage.GenerationConfig.ResponseModalities = []generativelanguagepb.GenerationConfig_Modality{
+			generativelanguagepb.GenerationConfig_AUDIO,
+		}
+		// this is causing invalid argument errors, omitting for now
+		//setupMessage.GenerationConfig.ResponseModalities = append(setupMessage.GenerationConfig.ResponseModalities, generativelanguagepb.GenerationConfig_IMAGE)
+	}
+	// todo: image? video
 
 	request := &generativelanguagepb.BidiGenerateContentClientMessage{
 		MessageType: &generativelanguagepb.BidiGenerateContentClientMessage_Setup{
@@ -325,138 +401,38 @@ func (c *Client) SendMessageToBidiStream(stream generativelanguagepb.GenerativeS
 	return nil
 }
 
+// CustomToolResponse represents a simplified tool response structure
+type CustomToolResponse struct {
+	Name     string          // Function name/ID
+	Response *structpb.Value // JSON response content as structpb.Value
+}
+
 // SendToolResultsToBidiStream sends tool results to an existing BidiGenerateContent stream.
-func (c *Client) SendToolResultsToBidiStream(stream generativelanguagepb.GenerativeService_BidiGenerateContentClient, toolResults interface{}) error {
+func (c *Client) SendToolResultsToBidiStream(stream generativelanguagepb.GenerativeService_BidiGenerateContentClient, toolResults ...*generativelanguagepb.FunctionResponse) error {
 	if stream == nil {
 		return fmt.Errorf("stream is nil")
 	}
 
-	// Serialize the tool results for logging
-	resultData, _ := json.Marshal(toolResults)
-	log.Printf("Sending tool results to bidirectional stream: %s", string(resultData))
-
-	// Type assertion for the expected structure
-	typedResults, ok := toolResults.([]interface{})
-	if !ok {
-		// Try to handle a slice directly using reflection
-		resultValue := reflect.ValueOf(toolResults)
-		if resultValue.Kind() == reflect.Slice {
-			// Convert reflection slice to interface slice
-			slice := make([]interface{}, resultValue.Len())
-			for i := 0; i < resultValue.Len(); i++ {
-				slice[i] = resultValue.Index(i).Interface()
-			}
-			typedResults = slice
-		} else {
-			// If it's not already a slice, wrap it in a slice
-			typedResults = []interface{}{toolResults}
-		}
+	// Create the client message
+	tr := &generativelanguagepb.BidiGenerateContentToolResponse{
+		FunctionResponses: toolResults,
 	}
-
-	// Create function response content
-	var functionResponsesContent []*generativelanguagepb.Content
-	
-	for _, result := range typedResults {
-		var id string
-		var response interface{}
-
-		if resultMap, ok := result.(map[string]interface{}); ok {
-			// Extract fields from the map
-			if idVal, ok := resultMap["id"]; ok {
-				id = fmt.Sprintf("%v", idVal)
-			}
-			
-			// Extract the response field
-			if responseVal, ok := resultMap["response"]; ok {
-				response = responseVal
-			}
-		}
-
-		// If we have a valid response, add it to the content
-		if id != "" {
-			// Marshal the response to JSON
-			responseJson, err := json.Marshal(response)
-			if err != nil {
-				log.Printf("Warning: Failed to marshal function response: %v", err)
-				responseJson = []byte("{}")
-			}
-
-			// Create a content for this function response
-			functionResponseContent := &generativelanguagepb.Content{
-				Parts: []*generativelanguagepb.Part{
-					{
-						Data: &generativelanguagepb.Part_Text{
-							Text: fmt.Sprintf("Function call response for '%s': %s", id, string(responseJson)),
-						},
-					},
-				},
-				Role: "function",
-			}
-			functionResponsesContent = append(functionResponsesContent, functionResponseContent)
-		}
-	}
-
-	// Send function responses as regular content for now
-	if len(functionResponsesContent) > 0 {
-		for _, content := range functionResponsesContent {
-			request := &generativelanguagepb.BidiGenerateContentClientMessage{
-				MessageType: &generativelanguagepb.BidiGenerateContentClientMessage_ClientContent{
-					ClientContent: &generativelanguagepb.BidiGenerateContentClientContent{
-						Turns:        []*generativelanguagepb.Content{content},
-						TurnComplete: true,
-					},
-				},
-			}
-
-			if os.Getenv("DEBUG_AISTUDIO") != "" {
-				log.Printf("Sending tool result as function content: %s", prototext.Format(request))
-			}
-
-			if err := stream.Send(request); err != nil {
-				return fmt.Errorf("failed to send function response: %w", err)
-			}
-		}
-
-		log.Printf("Tool results sent as function content successfully.")
-		return nil
-	}
-
-	// Fallback to text-based approach if the proper API doesn't work
-	resultsJson, err := json.MarshalIndent(toolResults, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to serialize tool results: %w", err)
-	}
-
-	message := fmt.Sprintf("[TOOL_RESULTS]\n%s\n[/TOOL_RESULTS]", string(resultsJson))
 
 	request := &generativelanguagepb.BidiGenerateContentClientMessage{
-		MessageType: &generativelanguagepb.BidiGenerateContentClientMessage_ClientContent{
-			ClientContent: &generativelanguagepb.BidiGenerateContentClientContent{
-				Turns: []*generativelanguagepb.Content{
-					{
-						Parts: []*generativelanguagepb.Part{
-							{
-								Data: &generativelanguagepb.Part_Text{
-									Text: message,
-								},
-							},
-						},
-					},
-				},
-				TurnComplete: true,
-			},
+		MessageType: &generativelanguagepb.BidiGenerateContentClientMessage_ToolResponse{
+			ToolResponse: tr,
 		},
 	}
 
 	if os.Getenv("DEBUG_AISTUDIO") != "" {
-		log.Printf("Falling back to text-based tool results: %s", prototext.Format(request))
+		log.Printf("Sending tool responses using content API: %s", prototext.Format(tr))
 	}
 
 	if err := stream.Send(request); err != nil {
-		return fmt.Errorf("failed to send text-based tool results: %w", err)
+		return fmt.Errorf("failed to send tool responses: %w", err)
 	}
 
-	log.Printf("Tool results sent using text fallback successfully.")
+	log.Printf("Tool responses sent successfully using content API.")
 	return nil
 }
 
@@ -473,9 +449,11 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 
 	// Extract data from the response
 	for _, part := range resp.GetServerContent().GetModelTurn().GetParts() {
+		//log.Printf("part type: %T", part.GetData())
 		// Extract text
 		if textData := part.GetText(); textData != "" {
 			output.Text += textData
+			log.Printf("Extracted text from part: %q", textData)
 		}
 		if part.GetFunctionCall() != nil {
 			log.Printf("Extracted function call: %q", part.GetFunctionCall())
@@ -528,6 +506,36 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 		}
 	}
 
+	// Look for safety ratings in the response
+	// In the Gemini API, safety ratings might come in different places
+	// For now, we'll look for direct safety information in the parts
+	if resp.GetServerContent() != nil && resp.GetServerContent().GetModelTurn() != nil {
+		for _, part := range resp.GetServerContent().GetModelTurn().GetParts() {
+			// Check if this part has metadata with safety ratings (not guaranteed in proto)
+			// This is a more generic approach since the exact API structure might vary
+			if field := reflect.ValueOf(part).Elem().FieldByName("SafetyRatings"); field.IsValid() {
+				ratings, ok := field.Interface().([]*generativelanguagepb.SafetyRating)
+				if ok && len(ratings) > 0 {
+					log.Printf("Extracted %d safety ratings from part metadata", len(ratings))
+					output.SafetyRatings = ratings
+				}
+			}
+
+			// Try to extract any content blocking information (if available)
+			if field := reflect.ValueOf(part).Elem().FieldByName("BlockedReasons"); field.IsValid() {
+				if field.Len() > 0 {
+					log.Printf("Content contains blocked reasons")
+				}
+			}
+		}
+	}
+
+	// Extract grounding metadata if available
+	if resp.GetServerContent() != nil && resp.GetServerContent().GetGroundingMetadata() != nil {
+		log.Printf("Extracted grounding metadata")
+		output.GroundingMetadata = resp.GetServerContent().GetGroundingMetadata()
+	}
+
 	/*
 		case *generativelanguagepb.BidiGenerateContentServerMessage_ServerFeedback:
 			if msg.ServerFeedback != nil {
@@ -540,7 +548,6 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 			log.Printf("Unknown message type: %T", msg)
 		}
 	*/
-	output.Text = strings.TrimSpace(output.Text)
 	if os.Getenv("DEBUG_AISTUDIO") != "" {
 		if output.Audio != nil {
 			log.Printf("Extracted audio data, %d bytes", len(output.Audio))
@@ -554,8 +561,27 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 		log.Printf("Final Extracted Output: %q", output.Text)
 		log.Printf("Final Extracted Audio Data: %d bytes", len(output.Audio))
 	}
-	// Trim whitespace from the text output
-	output.Text = strings.TrimSpace(output.Text)
+	// Check if this is the final chunk in the response
+	// The API doesn't directly expose token counts in the expected way,
+	// so we'll use a simpler approach to detect final chunks
+	if resp.GetServerContent() != nil {
+		// Check if this is the final chunk based on turn completion
+		if resp.GetServerContent().GetTurnComplete() {
+			output.IsFinalChunk = true
+			log.Printf("Final response chunk detected")
+		}
+
+		// We don't have direct access to token counts in this API version,
+		// but we can estimate based on text length as a fallback
+		if output.IsFinalChunk && output.Text != "" {
+			// Very rough estimate: ~4 chars per token on average
+			estimatedTokens := len(output.Text) / 4
+			output.CandidateTokenCount = int32(estimatedTokens)
+			output.TotalTokenCount = int32(estimatedTokens) // Without prompt info
+
+			log.Printf("Estimated token usage (rough): Response≈%d", estimatedTokens)
+		}
+	}
 	if output.Text == "" && len(output.Audio) == 0 && output.FunctionCall == nil && output.ExecutableCode == nil && output.CodeExecutionResult == nil {
 		log.Printf("Received response chunk contained no processable ouput: %s", prototext.Format(resp))
 	}
