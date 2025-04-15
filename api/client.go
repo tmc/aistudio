@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"time"
 
 	language "cloud.google.com/go/ai/generativelanguage/apiv1alpha"
 	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
@@ -711,4 +712,94 @@ func textContent(text string, opts ...textContentOption) *generativelanguagepb.C
 		opt(c)
 	}
 	return c
+}
+
+// ClientError represents an error from the client.
+type ClientError struct {
+	Code    int    // HTTP status code
+	Message string // Error message
+}
+
+func (e *ClientError) Error() string {
+	return fmt.Sprintf("Client Error: %d - %s", e.Code, e.Message)
+}
+
+// IsRetryable returns true if the error is retryable.
+func (e *ClientError) IsRetryable() bool {
+	// Add your logic to determine if the error is retryable
+	// For example, you could check the HTTP status code
+	// and consider 5xx errors as retryable
+	return e.Code >= 500 &&
+		e.Code < 600 &&
+		!strings.Contains(e.Message, "canceled") &&
+		!strings.Contains(e.Message, "deadline")
+}
+
+// RetryableError represents an error that can be retried.
+type RetryableError struct {
+	Err     error  // The underlying error
+	Retries int    // Number of retries attempted
+	MaxRetries int // Maximum number of retries allowed
+	Backoff time.Duration // Backoff duration for the next retry
+}
+
+func (e *RetryableError) Error() string {
+	return fmt.Sprintf("Retryable Error: %s (retries: %d/%d, backoff: %v)", e.Err.Error(), e.Retries, e.MaxRetries, e.Backoff)
+}
+
+// IsRetryable returns true if the error is retryable and the maximum number of retries has not been reached.
+func (e *RetryableError) IsRetryable() bool {
+	return e.Retries < e.MaxRetries
+}
+
+// Retry retries the operation with exponential backoff.
+func (e *RetryableError) Retry(ctx context.Context, op func() error) error {
+	if !e.IsRetryable() {
+		return e.Err
+	}
+
+	time.Sleep(e.Backoff)
+	e.Retries++
+	e.Backoff *= 2 // Exponential backoff
+
+	err := op()
+	if err != nil {
+		if clientErr, ok := err.(*ClientError); ok && clientErr.IsRetryable() {
+			return &RetryableError{
+				Err:        err,
+				Retries:    e.Retries,
+				MaxRetries: e.MaxRetries,
+				Backoff:    e.Backoff,
+			}
+		}
+		return err
+	}
+
+	return nil
+}
+
+// RetryWithExponentialBackoff retries the given operation with exponential backoff.
+func RetryWithExponentialBackoff(ctx context.Context, op func() error, maxRetries int, initialBackoff time.Duration) error {
+	var err error
+	retryableErr := &RetryableError{
+		Retries:    0,
+		MaxRetries: maxRetries,
+		Backoff:    initialBackoff,
+	}
+
+	for {
+		err = op()
+		if err == nil {
+			return nil
+		}
+
+		if clientErr, ok := err.(*ClientError); ok && clientErr.IsRetryable() {
+			err = retryableErr.Retry(ctx, op)
+			if err == nil {
+				return nil
+			}
+		} else {
+			return err
+		}
+	}
 }
