@@ -377,284 +377,273 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// Update handles incoming messages and updates the model state.
-// It acts as the main dispatcher.
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// handleKeyMsg handles keyboard input messages.
+func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var (
-		taCmd               tea.Cmd
-		vpCmd               tea.Cmd
-		spCmd               tea.Cmd
-		cmds                []tea.Cmd
-		sendCmd             tea.Cmd
-		startPlaybackTicker bool // Flag to start the ticker
+		cmds    []tea.Cmd
+		sendCmd tea.Cmd
+		// startPlaybackTicker bool // Flag is handled in the main Update loop
 	)
 
-	// Check if the root context is done (timeout or cancelled)
-	if m.rootCtx != nil && m.rootCtx.Err() != nil {
-		log.Printf("Root context closed: %v", m.rootCtx.Err())
-		m.quitting = true
-		return m, tea.Quit
+	// Check if settings panel is focused first
+	if m.showSettingsPanel && m.settingsPanel != nil && m.focusedComponent == "settings" {
+		// Update the settings panel
+		var settingsCmd tea.Cmd
+		*m.settingsPanel, settingsCmd = m.settingsPanel.Update(msg)
+		cmds = append(cmds, settingsCmd)
+
+		// If settings panel no longer focused, return to input
+		if !m.settingsPanel.Focused {
+			m.focusedComponent = "input"
+			m.textarea.Focus()
+		}
+		// Return early as settings panel handled the key
+		return m, tea.Batch(cmds...)
 	}
+	// else { // No need for else, handled below if not settings panel
+	// Otherwise handle key in main UI
+	// Note: Textarea update happens in the main Update function before this handler
+	// m.textarea, taCmd = m.textarea.Update(msg) // Update textarea here
+	// cmds = append(cmds, taCmd)
+	// }
 
-	// Update standard components
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		// Key messages processed below
-	default:
-		m.textarea, taCmd = m.textarea.Update(msg)
-		m.viewport, vpCmd = m.viewport.Update(msg)
-	}
-	m.spinner, spCmd = m.spinner.Update(msg)
-	cmds = append(cmds, taCmd, vpCmd, spCmd)
+	switch msg.String() {
+	// Add handlers for Y/N keys for tool approval
+	case "y", "Y": // Approve tool call
+		if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
+			// Get the current tool call
+			approvedCalls := []ToolCall{m.pendingToolCalls[m.approvalIndex]}
 
-	// --- Process specific message types ---
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		// Check if settings panel is focused first
-		if m.showSettingsPanel && m.settingsPanel != nil && m.focusedComponent == "settings" {
-			// Update the settings panel
-			var settingsCmd tea.Cmd
-			*m.settingsPanel, settingsCmd = m.settingsPanel.Update(msg)
-			cmds = append(cmds, settingsCmd)
+			// Execute the approved tool call
+			log.Printf("Tool call approved: %s", approvedCalls[0].Name)
 
-			// If settings panel no longer focused, return to input
-			if !m.settingsPanel.Focused {
-				m.focusedComponent = "input"
-				m.textarea.Focus()
+			// Process the tool call
+			results, err := m.executeToolCalls(approvedCalls)
+			if err != nil {
+				log.Printf("Error executing tool call: %v", err)
+				m.messages = append(m.messages, formatError(fmt.Errorf("error executing tool call: %w", err)))
+			} else if len(results) > 0 {
+				// Send results back to model
+				cmds = append(cmds, m.sendToolResultsCmd(results))
 			}
-		} else {
-			// Otherwise handle key in main UI
-			m.textarea, taCmd = m.textarea.Update(msg) // Update textarea here
-			cmds = append(cmds, taCmd)
+
+			// Move to next tool call or close modal
+			m.approvalIndex++
+			if m.approvalIndex >= len(m.pendingToolCalls) {
+				// All tool calls processed, close the modal
+				m.showToolApproval = false
+				m.pendingToolCalls = nil
+				m.approvalIndex = 0
+			}
+
+			// Update UI
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+			return m, tea.Batch(cmds...)
 		}
 
-		switch msg.String() {
-		// Add handlers for Y/N keys for tool approval
-		case "y", "Y": // Approve tool call
-			if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
-				// Get the current tool call
-				approvedCalls := []ToolCall{m.pendingToolCalls[m.approvalIndex]}
+	case "n", "N": // Deny tool call
+		if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
+			// Get the current tool call
+			deniedCall := m.pendingToolCalls[m.approvalIndex]
 
-				// Execute the approved tool call
-				log.Printf("Tool call approved: %s", approvedCalls[0].Name)
+			// Log the denial
+			log.Printf("Tool call denied: %s", deniedCall.Name)
 
-				// Process the tool call
-				results, err := m.executeToolCalls(approvedCalls)
+			// Create a message about the denial
+			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Tool call to '%s' was denied by the user.", deniedCall.Name)))
+
+			// Create an error function response
+			var fnResponse generativelanguagepb.FunctionResponse
+			fnResponse.Id = deniedCall.ID
+			fnResponse.Response, _ = structpb.NewStruct(map[string]any{
+				"error": "Tool call denied by user",
+			})
+
+			// Send the error result back to the model
+			cmds = append(cmds, func() tea.Msg {
+				if m.bidiStream == nil {
+					return sendErrorMsg{err: fmt.Errorf("bidirectional stream not initialized")}
+				}
+
+				err := m.client.SendToolResultsToBidiStream(m.bidiStream, &fnResponse)
 				if err != nil {
-					log.Printf("Error executing tool call: %v", err)
-					m.messages = append(m.messages, formatError(fmt.Errorf("error executing tool call: %w", err)))
-				} else if len(results) > 0 {
-					// Send results back to model
-					cmds = append(cmds, m.sendToolResultsCmd(results))
+					return sendErrorMsg{err: fmt.Errorf("failed to send tool denial: %w", err)}
 				}
 
-				// Move to next tool call or close modal
-				m.approvalIndex++
-				if m.approvalIndex >= len(m.pendingToolCalls) {
-					// All tool calls processed, close the modal
-					m.showToolApproval = false
-					m.pendingToolCalls = nil
-					m.approvalIndex = 0
-				}
+				return toolCallSentMsg{}
+			})
 
-				// Update UI
-				m.viewport.SetContent(m.formatAllMessages())
-				m.viewport.GotoBottom()
-				return m, tea.Batch(cmds...)
+			// Move to next tool call or close modal
+			m.approvalIndex++
+			if m.approvalIndex >= len(m.pendingToolCalls) {
+				// All tool calls processed, close the modal
+				m.showToolApproval = false
+				m.pendingToolCalls = nil
+				m.approvalIndex = 0
 			}
 
-		case "n", "N": // Deny tool call
-			if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
-				// Get the current tool call
-				deniedCall := m.pendingToolCalls[m.approvalIndex]
+			// Update UI
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+			return m, tea.Batch(cmds...)
+		}
+	case "ctrl+c":
+		m.quitting = true
+		if m.stream != nil {
+			cmds = append(cmds, m.closeStreamCmd())
+		}
+		if m.bidiStream != nil {
+			cmds = append(cmds, m.closeBidiStreamCmd())
+		}
+		// Let the main Update loop handle tea.Quit
+		// return m, tea.Quit
+		return m, tea.Batch(cmds...)
 
-				// Log the denial
-				log.Printf("Tool call denied: %s", deniedCall.Name)
+	case "ctrl+s": // Toggle settings panel
+		m.showSettingsPanel = !m.showSettingsPanel
+		if m.showSettingsPanel {
+			m.focusedComponent = "settings"
+			m.settingsPanel.Focus()
+			m.textarea.Blur()
+		} else {
+			m.focusedComponent = "input"
+			m.textarea.Focus()
+		}
+		return m, tea.Batch(cmds...) // Return early
 
-				// Create a message about the denial
-				m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Tool call to '%s' was denied by the user.", deniedCall.Name)))
-
-				// Create an error function response
-				var fnResponse generativelanguagepb.FunctionResponse
-				fnResponse.Id = deniedCall.ID
-				fnResponse.Response, _ = structpb.NewStruct(map[string]any{
-					"error": "Tool call denied by user",
-				})
-
-				// Send the error result back to the model
-				cmds = append(cmds, func() tea.Msg {
-					if m.bidiStream == nil {
-						return sendErrorMsg{err: fmt.Errorf("bidirectional stream not initialized")}
-					}
-
-					err := m.client.SendToolResultsToBidiStream(m.bidiStream, &fnResponse)
-					if err != nil {
-						return sendErrorMsg{err: fmt.Errorf("failed to send tool denial: %w", err)}
-					}
-
-					return toolCallSentMsg{}
-				})
-
-				// Move to next tool call or close modal
-				m.approvalIndex++
-				if m.approvalIndex >= len(m.pendingToolCalls) {
-					// All tool calls processed, close the modal
-					m.showToolApproval = false
-					m.pendingToolCalls = nil
-					m.approvalIndex = 0
-				}
-
-				// Update UI
-				m.viewport.SetContent(m.formatAllMessages())
-				m.viewport.GotoBottom()
-				return m, tea.Batch(cmds...)
-			}
-		case "ctrl+c":
-			m.quitting = true
-			if m.stream != nil {
-				cmds = append(cmds, m.closeStreamCmd())
-			}
-			if m.bidiStream != nil {
-				cmds = append(cmds, m.closeBidiStreamCmd())
-			}
-			return m, tea.Quit
-
-		case "ctrl+s": // Toggle settings panel
-			m.showSettingsPanel = !m.showSettingsPanel
-			if m.showSettingsPanel {
+	case "tab":
+		// Handle tab navigation between components
+		if m.showSettingsPanel {
+			if m.focusedComponent == "input" {
 				m.focusedComponent = "settings"
 				m.settingsPanel.Focus()
 				m.textarea.Blur()
-			} else {
+			} else if m.focusedComponent == "settings" {
 				m.focusedComponent = "input"
 				m.textarea.Focus()
+				m.settingsPanel.Blur()
 			}
-			return m, tea.Batch(cmds...) // Return early
-
-		case "tab":
-			// Handle tab navigation between components
-			if m.showSettingsPanel {
-				if m.focusedComponent == "input" {
-					m.focusedComponent = "settings"
-					m.settingsPanel.Focus()
-					m.textarea.Blur()
-				} else if m.focusedComponent == "settings" {
-					m.focusedComponent = "input"
-					m.textarea.Focus()
-					m.settingsPanel.Blur()
-				}
-			}
-			return m, tea.Batch(cmds...) // Return early
-
-		case "ctrl+m": // Toggle Mic state
-			m.micActive = !m.micActive
-			log.Printf("Mic input simulation toggled: %v", m.micActive)
-			if m.micActive {
-				m.videoInputMode = VideoInputNone
-			}
-			return m, tea.Batch(cmds...) // Return early
-
-		case "ctrl+t": // Show available tools
-			if m.enableTools && m.toolManager != nil {
-				// Get list of available tools
-				toolsList := m.toolManager.ListAvailableTools()
-
-				// Display available tools
-				m.messages = append(m.messages, formatMessage("System", toolsList))
-				m.viewport.SetContent(m.formatAllMessages())
-				m.viewport.GotoBottom()
-			} else {
-				// Display a message about tools being disabled
-				m.messages = append(m.messages, formatMessage("System", "Tool calling is disabled. Enable with --tools flag."))
-				m.viewport.SetContent(m.formatAllMessages())
-				m.viewport.GotoBottom()
-			}
-			return m, tea.Batch(cmds...) // Return early
-
-		case "ctrl+v": // Toggle Video state
-			switch m.videoInputMode {
-			case VideoInputNone:
-				m.videoInputMode = VideoInputCamera
-			case VideoInputCamera:
-				m.videoInputMode = VideoInputScreen
-			case VideoInputScreen:
-				m.videoInputMode = VideoInputNone
-			}
-			log.Printf("Video input simulation toggled: %s", m.videoInputMode)
-			if m.videoInputMode != VideoInputNone {
-				m.micActive = false
-			}
-			return m, tea.Batch(cmds...) // Return early
-
-		case "ctrl+p": // Play last available audio
-			playCmd, triggered := m.PlayLastAudio() // Using extracted function from audio_controls.go
-			if triggered {
-				startPlaybackTicker = true // Signal to start ticker if not running
-				cmds = append(cmds, playCmd)
-			}
-			// Return with potential play command and component updates
-			return m, tea.Batch(cmds...)
-
-		case "ctrl+r": // Replay last played audio
-			replayCmd, triggered := m.ReplayLastAudio() // Using extracted function from audio_controls.go
-			if triggered {
-				startPlaybackTicker = true // Signal to start ticker if not running
-				cmds = append(cmds, replayCmd)
-			}
-			return m, tea.Batch(cmds...)
-
-		case "ctrl+h": // Toggle history view or save history
-			if m.historyEnabled && m.historyManager != nil {
-				// Save current session
-				cmds = append(cmds, m.saveSessionCmd())
-
-				// Display a message about history saving
-				m.messages = append(m.messages, formatMessage("System", "Chat history saved."))
-				m.viewport.SetContent(m.formatAllMessages())
-				m.viewport.GotoBottom()
-			} else {
-				// Display a message about history being disabled
-				m.messages = append(m.messages, formatMessage("System", "Chat history is disabled. Enable with --history flag."))
-				m.viewport.SetContent(m.formatAllMessages())
-				m.viewport.GotoBottom()
-			}
-			return m, tea.Batch(cmds...)
-
-		case "enter": // Send message
-			if txt := strings.TrimSpace(m.textarea.Value()); txt != "" && m.streamReady {
-				m.messages = append(m.messages, formatMessage("You", txt)) // helpers.go
-				m.viewport.SetContent(m.formatAllMessages())               // ui.go
-				m.viewport.GotoBottom()
-				m.textarea.Reset()
-				m.textarea.Focus()
-				m.sending = true
-				cmds = append(cmds, m.spinner.Tick)
-
-				// Save message to history if enabled
-				if m.historyEnabled && m.historyManager != nil {
-					m.historyManager.AddMessage(formatMessage("You", txt))
-					// Auto-save on new message
-					cmds = append(cmds, m.saveSessionCmd())
-				}
-
-				if m.useBidi && m.bidiStream != nil {
-					sendCmd = m.sendToBidiStreamCmd(txt) // stream.go
-				} else {
-					sendCmd = m.sendToStreamCmd(txt) // stream.go
-				}
-				cmds = append(cmds, sendCmd)
-
-			} else if !m.streamReady {
-				err := fmt.Errorf("cannot send message: stream not ready")
-				m.messages = append(m.messages, formatError(err)) // helpers.go
-				m.viewport.SetContent(m.formatAllMessages())
-				m.viewport.GotoBottom()
-				m.err = err // Keep error state
-			}
-			return m, tea.Batch(cmds...)
 		}
+		return m, tea.Batch(cmds...) // Return early
 
-	// --- Stream Messages ---
+	case "ctrl+m": // Toggle Mic state
+		m.micActive = !m.micActive
+		log.Printf("Mic input simulation toggled: %v", m.micActive)
+		if m.micActive {
+			m.videoInputMode = VideoInputNone
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "ctrl+t": // Show available tools
+		if m.enableTools && m.toolManager != nil {
+			// Get list of available tools
+			toolsList := m.toolManager.ListAvailableTools()
+
+			// Display available tools
+			m.messages = append(m.messages, formatMessage("System", toolsList))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+		} else {
+			// Display a message about tools being disabled
+			m.messages = append(m.messages, formatMessage("System", "Tool calling is disabled. Enable with --tools flag."))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "ctrl+v": // Toggle Video state
+		switch m.videoInputMode {
+		case VideoInputNone:
+			m.videoInputMode = VideoInputCamera
+		case VideoInputCamera:
+			m.videoInputMode = VideoInputScreen
+		case VideoInputScreen:
+			m.videoInputMode = VideoInputNone
+		}
+		log.Printf("Video input simulation toggled: %s", m.videoInputMode)
+		if m.videoInputMode != VideoInputNone {
+			m.micActive = false
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "ctrl+p": // Play last available audio
+		playCmd, triggered := m.PlayLastAudio() // Using extracted function from audio_controls.go
+		if triggered {
+			// startPlaybackTicker = true // Signal to start ticker if not running - handled in main Update
+			cmds = append(cmds, playCmd)
+		}
+		// Return with potential play command and component updates
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+r": // Replay last played audio
+		replayCmd, triggered := m.ReplayLastAudio() // Using extracted function from audio_controls.go
+		if triggered {
+			// startPlaybackTicker = true // Signal to start ticker if not running - handled in main Update
+			cmds = append(cmds, replayCmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+h": // Toggle history view or save history
+		if m.historyEnabled && m.historyManager != nil {
+			// Save current session
+			cmds = append(cmds, m.saveSessionCmd())
+
+			// Display a message about history saving
+			m.messages = append(m.messages, formatMessage("System", "Chat history saved."))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+		} else {
+			// Display a message about history being disabled
+			m.messages = append(m.messages, formatMessage("System", "Chat history is disabled. Enable with --history flag."))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+		}
+		return m, tea.Batch(cmds...)
+
+	case "enter": // Send message
+		if txt := strings.TrimSpace(m.textarea.Value()); txt != "" && m.streamReady {
+			m.messages = append(m.messages, formatMessage("You", txt)) // helpers.go
+			m.viewport.SetContent(m.formatAllMessages())               // ui.go
+			m.viewport.GotoBottom()
+			m.textarea.Reset()
+			m.textarea.Focus()
+			m.sending = true
+			cmds = append(cmds, m.spinner.Tick)
+
+			// Save message to history if enabled
+			if m.historyEnabled && m.historyManager != nil {
+				m.historyManager.AddMessage(formatMessage("You", txt))
+				// Auto-save on new message
+				cmds = append(cmds, m.saveSessionCmd())
+			}
+
+			if m.useBidi && m.bidiStream != nil {
+				sendCmd = m.sendToBidiStreamCmd(txt) // stream.go
+			} else {
+				sendCmd = m.sendToStreamCmd(txt) // stream.go
+			}
+			cmds = append(cmds, sendCmd)
+
+		} else if !m.streamReady {
+			err := fmt.Errorf("cannot send message: stream not ready")
+			m.messages = append(m.messages, formatError(err)) // helpers.go
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+			m.err = err // Keep error state
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	// If no specific key was handled, return the model and any accumulated commands (e.g., from textarea update)
+	return m, tea.Batch(cmds...)
+}
+
+// handleStreamMsg handles messages related to the generative stream.
+func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
 	case initStreamMsg: // stream.go
 		m.messages = append(m.messages, formatMessage("System", "Connecting to Gemini..."))
 		m.viewport.SetContent(m.formatAllMessages())
@@ -738,7 +727,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				log.Printf("[UI] Triggering playback for stream message #%d", idx)
 				cmds = append(cmds, m.playAudioCmd(newMessage.AudioData, newMessage.Content))
 				m.messages[idx].IsPlaying = true // Optimistic UI
-				startPlaybackTicker = true
+				// startPlaybackTicker = true // Handled in main Update
 			}
 			m.viewport.SetContent(m.formatAllMessages())
 			m.viewport.GotoBottom()
@@ -939,39 +928,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamCtxCancel()
 			m.streamCtxCancel = nil
 		}
+	}
+	return m, tea.Batch(cmds...)
+}
 
-	// --- Tool Call Messages ---
-	case toolCallSentMsg:
-		// Tool call results sent successfully, nothing to do
+// handleAudioMsg handles messages related to audio playback and processing.
+func (m *Model) handleAudioMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	// startPlaybackTicker := false // Handled in main Update
 
-	case toolCallResultMsg:
-		// Results from tool calls, might be displayed or logged
-		log.Printf("Received %d tool call results", len(msg.results))
-
-	// --- History Messages ---
-	case historyLoadedMsg:
-		if msg.session != nil {
-			m.loadMessagesFromSession(msg.session)
-			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Loaded chat session: %s", msg.session.Title)))
-			m.viewport.SetContent(m.formatAllMessages())
-			m.viewport.GotoBottom()
-		}
-
-	case historyLoadFailedMsg:
-		m.messages = append(m.messages, formatError(fmt.Errorf("failed to load history: %w", msg.err)))
-		m.viewport.SetContent(m.formatAllMessages())
-		m.viewport.GotoBottom()
-
-	case historySavedMsg:
-		// History saved successfully, could show a notification
-		log.Println("Chat history saved successfully")
-
-	case historySaveFailedMsg:
-		m.messages = append(m.messages, formatError(fmt.Errorf("failed to save history: %w", msg.err)))
-		m.viewport.SetContent(m.formatAllMessages())
-		m.viewport.GotoBottom()
-
-	// --- Audio Messages ---
+	switch msg := msg.(type) {
 	case audioPlaybackStartedMsg: // types.go
 		log.Printf("[UI] Received audioPlaybackStartedMsg: Msg #%d, Size=%d", msg.chunk.MessageIndex, len(msg.chunk.Data))
 		m.isAudioProcessing = true // Mark that playback is active
@@ -988,8 +954,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focusedComponent == "input" {
 			m.textarea.Focus()
 		}
-
-		startPlaybackTicker = true // Signal to start ticker
+		// startPlaybackTicker = true // Signal to start ticker - Handled in main Update
 
 	case audioPlaybackCompletedMsg: // types.go
 		log.Printf("[UI] Received audioPlaybackCompletedMsg: Msg #%d, Size=%d", msg.chunk.MessageIndex, len(msg.chunk.Data))
@@ -1069,10 +1034,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textarea.Focus()
 			}
 		}
+	}
+	return m, tea.Batch(cmds...)
+}
 
-	// --- Other System Messages ---
+// handleToolMsg handles messages related to tool calls and results.
+func (m *Model) handleToolMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case toolCallSentMsg:
+		// Tool call results sent successfully, nothing to do
+		log.Println("Tool call results sent successfully.")
+
+	case toolCallResultMsg:
+		// Results from tool calls, might be displayed or logged
+		log.Printf("Received %d tool call results", len(msg.results))
+		// Potentially add a system message here if needed
+		// m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Processed %d tool results.", len(msg.results))))
+		// m.viewport.SetContent(m.formatAllMessages())
+		// m.viewport.GotoBottom()
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// handleHistoryMsg handles messages related to chat history loading and saving.
+func (m *Model) handleHistoryMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case historyLoadedMsg:
+		if msg.session != nil {
+			m.loadMessagesFromSession(msg.session)
+			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Loaded chat session: %s", msg.session.Title)))
+			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.GotoBottom()
+		}
+
+	case historyLoadFailedMsg:
+		m.messages = append(m.messages, formatError(fmt.Errorf("failed to load history: %w", msg.err)))
+		m.viewport.SetContent(m.formatAllMessages())
+		m.viewport.GotoBottom()
+
+	case historySavedMsg:
+		// History saved successfully, could show a notification
+		log.Println("Chat history saved successfully")
+
+	case historySaveFailedMsg:
+		m.messages = append(m.messages, formatError(fmt.Errorf("failed to save history: %w", msg.err)))
+		m.viewport.SetContent(m.formatAllMessages())
+		m.viewport.GotoBottom()
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// handleSystemMsg handles general system messages like ticks and window size changes.
+func (m *Model) handleSystemMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		// Handled by spinner update earlier
+		// Handled by spinner update in the main Update loop
 
 	case tea.WindowSizeMsg:
 		// Prevent zero dimensions
@@ -1109,24 +1131,136 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 
 	default:
-		// Ignore unknown messages
+		// Ignore unknown messages handled elsewhere or not relevant here
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// Update handles incoming messages and updates the model state.
+// It acts as the main dispatcher, delegating to helper functions.
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		taCmd               tea.Cmd
+		vpCmd               tea.Cmd
+		spCmd               tea.Cmd
+		cmds                []tea.Cmd
+		helperCmd           tea.Cmd // Command returned by helper function
+		startPlaybackTicker bool    // Flag to start the ticker, potentially set by helpers
+	)
+
+	// --- Pre-Update Checks and Component Updates ---
+
+	// Check if the root context is done (timeout or cancelled)
+	if m.rootCtx != nil && m.rootCtx.Err() != nil {
+		log.Printf("Root context closed: %v", m.rootCtx.Err())
+		m.quitting = true
+		return m, tea.Quit
 	}
 
-	// Start ticker command if flagged and not already running
+	// Update standard components (textarea, viewport, spinner) before handling specific messages
+	// Note: KeyMsg handling might update textarea again, which is fine.
+	m.textarea, taCmd = m.textarea.Update(msg)
+	m.viewport, vpCmd = m.viewport.Update(msg)
+	m.spinner, spCmd = m.spinner.Update(msg)
+	cmds = append(cmds, taCmd, vpCmd, spCmd)
+
+	// --- Delegate to Message Handlers ---
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		// Check for Ctrl+P/Ctrl+R which might set startPlaybackTicker
+		if msg.String() == "ctrl+p" || msg.String() == "ctrl+r" {
+			// Peek ahead to see if playback was triggered
+			_, triggered := m.peekPlaybackTrigger(msg.String())
+			if triggered {
+				startPlaybackTicker = true
+			}
+		}
+		_, helperCmd = m.handleKeyMsg(msg)
+
+	// --- Stream Messages ---
+	case initStreamMsg, streamReadyMsg, bidiStreamReadyMsg, streamResponseMsg, bidiStreamResponseMsg, sentMsg, sendErrorMsg, streamErrorMsg, streamClosedMsg:
+		// Check streamResponseMsg for audio which might set startPlaybackTicker
+		if respMsg, ok := msg.(streamResponseMsg); ok {
+			if respMsg.output.HasAudio && m.enableAudio && m.playerCmd != "" {
+				startPlaybackTicker = true
+			}
+		}
+		_, helperCmd = m.handleStreamMsg(msg)
+
+	// --- Tool Call Messages ---
+	case toolCallSentMsg, toolCallResultMsg:
+		_, helperCmd = m.handleToolMsg(msg)
+
+	// --- History Messages ---
+	case historyLoadedMsg, historyLoadFailedMsg, historySavedMsg, historySaveFailedMsg:
+		_, helperCmd = m.handleHistoryMsg(msg)
+
+	// --- Audio Messages ---
+	case audioPlaybackStartedMsg, audioPlaybackCompletedMsg, audioQueueUpdatedMsg, audioPlaybackErrorMsg, flushAudioBufferMsg, playbackTickMsg:
+		// Check audioPlaybackStartedMsg which might set startPlaybackTicker
+		if _, ok := msg.(audioPlaybackStartedMsg); ok {
+			startPlaybackTicker = true
+		}
+		_, helperCmd = m.handleAudioMsg(msg)
+
+	// --- Other System Messages ---
+	case spinner.TickMsg, tea.WindowSizeMsg:
+		_, helperCmd = m.handleSystemMsg(msg)
+
+	default:
+		// Ignore unknown messages or messages handled by component updates above
+	}
+
+	// Append command from the helper function
+	if helperCmd != nil {
+		cmds = append(cmds, helperCmd)
+	}
+
+	// --- Post-Update Logic ---
+
+	// Start ticker command if flagged by any handler and not already running
 	if startPlaybackTicker && !m.tickerRunning {
 		m.tickerRunning = true
 		log.Println("[UI] Starting playback ticker.")
 		cmds = append(cmds, playbackTickCmd())
 	}
 
-	// Always ensure textarea keeps focus, even during audio playback
+	// Always ensure textarea keeps focus if it's the active component
 	// This is critical for ensuring the input prompt remains visible
-	m.textarea.Focus()
+	if m.focusedComponent == "input" {
+		m.textarea.Focus()
+	}
 
 	// Important: Always add the listener command back to the batch
+	// to keep listening for background updates.
 	cmds = append(cmds, m.listenForUIUpdatesCmd())
 
+	// Check for quit signal again after handling messages
+	if m.quitting {
+		return m, tea.Quit
+	}
+
 	return m, tea.Batch(cmds...)
+}
+
+// peekPlaybackTrigger is a helper to check if Ctrl+P/Ctrl+R will trigger playback
+// without actually modifying the state yet. This helps decide if the ticker needs starting.
+func (m *Model) peekPlaybackTrigger(key string) (cmd tea.Cmd, triggered bool) {
+	switch key {
+	case "ctrl+p":
+		// Check if there's audio in the last Gemini message
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].Sender == "Gemini" && m.messages[i].HasAudio && len(m.messages[i].AudioData) > 0 {
+				return nil, true // Playback would be triggered
+			}
+		}
+	case "ctrl+r":
+		// Check if there's currently playing/last played audio
+		if m.currentAudio != nil && len(m.currentAudio.Data) > 0 {
+			return nil, true // Replay would be triggered
+		}
+	}
+	return nil, false
 }
 
 // View renders the UI.
@@ -1138,22 +1272,8 @@ func (m Model) View() string {
 		return "Closing stream and quitting...\n"
 	}
 
-	// Set default dimensions if needed
-	if m.width == 0 || m.height == 0 {
-		// Set default dimensions for better initial rendering
-		m.width = 80
-		m.height = 24
-	}
-
-	// Always ensure textarea is visible with proper width - this is critical!
-	m.textarea.SetWidth(m.width)
-	m.textarea.SetHeight(1) // One line is enough
-
-	// Ensure the textarea has focus when in input mode
-	// This is necessary for the input prompt to be visible
-	if m.focusedComponent == "input" {
-		m.textarea.Focus()
-	}
+	// Dimensions and focus are handled in the Update method.
+	// View should only render based on the current state.
 
 	// Give viewport some space
 	headerHeight := 2 // Minimal header height
