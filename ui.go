@@ -18,15 +18,15 @@ func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Add
 	var senderStyle lipgloss.Style
 	switch msg.Sender {
 	case "You":
-		senderStyle = senderYouStyle
+		senderStyle = senderUserStyle
 	case "Gemini":
-		senderStyle = senderGeminiStyle
+		senderStyle = senderModelStyle
 	default:
 		senderStyle = senderSystemStyle
 	}
 
 	// Keep sender header even if content is empty
-	header := senderStyle.Render(msg.Sender + ":")
+	header := senderStyle.Render(string(msg.Sender) + ":")
 
 	cleanedContent := msg.Content
 
@@ -354,7 +354,7 @@ func (m *Model) renderToolApprovalModal() string {
 
 	// Get the current tool call being approved
 	toolCall := m.pendingToolCalls[m.approvalIndex]
-	
+
 	// Create styles for the modal
 	boxStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
@@ -362,34 +362,34 @@ func (m *Model) renderToolApprovalModal() string {
 		Padding(1, 3).
 		Width(m.width - 10).
 		Align(lipgloss.Center)
-		
+
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("63")).
 		MarginBottom(1)
-		
+
 	toolNameStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("39")).
 		Bold(true)
-		
+
 	buttonStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("0")).
 		Background(lipgloss.Color("63")).
 		Padding(0, 2).
 		MarginRight(2)
-		
+
 	buttonDangerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("0")).
 		Background(lipgloss.Color("160")).
 		Padding(0, 2).
 		MarginRight(2)
-		
+
 	// Format arguments for display
 	var argsBuf bytes.Buffer
 	if err := json.Indent(&argsBuf, toolCall.Arguments, "", "  "); err != nil {
 		argsBuf.Write(toolCall.Arguments)
 	}
-	
+
 	// Build the modal content
 	var builder strings.Builder
 	builder.WriteString(titleStyle.Render("Tool Call Approval Required"))
@@ -400,12 +400,12 @@ func (m *Model) renderToolApprovalModal() string {
 	builder.WriteString("```json\n")
 	builder.WriteString(argsBuf.String())
 	builder.WriteString("\n```\n\n")
-	
+
 	// Add progress indicator if there are multiple pending tool calls
 	if len(m.pendingToolCalls) > 1 {
 		builder.WriteString(fmt.Sprintf("Tool call %d of %d\n\n", m.approvalIndex+1, len(m.pendingToolCalls)))
 	}
-	
+
 	// Add action buttons
 	builder.WriteString(buttonStyle.Render("Y: Approve"))
 	builder.WriteString(" ")
@@ -414,7 +414,7 @@ func (m *Model) renderToolApprovalModal() string {
 		builder.WriteString(" ")
 		builder.WriteString(buttonStyle.Render("Tab: Next"))
 	}
-	
+
 	return boxStyle.Render(builder.String())
 }
 

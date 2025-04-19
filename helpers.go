@@ -9,10 +9,17 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"bytes"
+	"encoding/json"
+
+	"github.com/charmbracelet/lipgloss"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // formatMessage creates a Message from sender and content
-func formatMessage(sender, content string) Message {
+func formatMessage(sender senderName, content string) Message {
 	return Message{
 		Sender:    sender,
 		Content:   content,
@@ -145,4 +152,85 @@ func formatDuration(totalSeconds float64) string {
 	minutes := ts / 60
 	seconds := ts % 60
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
+}
+
+// formatToolCallMessage creates a Message for a tool call with enhanced formatting
+func formatToolCallMessage(toolCall ToolCall, status ToolCallStatus) Message {
+	var content strings.Builder
+	toolCallStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")) // Magenta style for tool calls
+	argsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))     // Gray for args
+
+	content.WriteString(toolCallStyle.Render(fmt.Sprintf("🔧 Tool Call: %s (ID: %s)", toolCall.Name, toolCall.ID)))
+	content.WriteString("\n")
+	content.WriteString(toolCallStyle.Render(fmt.Sprintf("   Status: %s", status)))
+	content.WriteString("\n")
+
+	// Format arguments
+	if len(toolCall.Arguments) > 0 {
+		var args bytes.Buffer
+		if err := json.Indent(&args, toolCall.Arguments, "   ", "  "); err != nil {
+			// Fallback if indent fails
+			content.WriteString(argsStyle.Render(fmt.Sprintf("   Arguments: %s", string(toolCall.Arguments))))
+		} else {
+			content.WriteString(argsStyle.Render("   Arguments:"))
+			content.WriteString("\n")
+			content.WriteString(argsStyle.Render(args.String()))
+		}
+		content.WriteString("\n")
+	} else {
+		content.WriteString(argsStyle.Render("   Arguments: (none)"))
+		content.WriteString("\n")
+	}
+
+	return Message{
+		Sender:     "System",
+		Content:    content.String(), // Use the pre-formatted content
+		IsToolCall: true,
+		ToolCall:   &toolCall,
+		//ToolStatus: status,
+		Timestamp: time.Now(),
+	}
+}
+
+func formatToolResultMessage(toolCallID, toolName string, result *structpb.Struct, status ToolCallStatus) Message {
+	var content strings.Builder
+	toolResultStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+	resultStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+
+	content.WriteString(toolResultStyle.Render(fmt.Sprintf("✅ Tool Result: %s (ID: %s)", toolName, toolCallID)))
+	content.WriteString("\n")
+
+	if result != nil && len(result.Fields) > 0 {
+		content.WriteString(resultStyle.Render("   Result:"))
+		content.WriteString("\n")
+
+		jsonBytes, err := protojson.Marshal(result)
+		if err != nil {
+			content.WriteString(resultStyle.Render(fmt.Sprintf("   Error marshaling result: %v", err)))
+		} else {
+			var prettyJSON bytes.Buffer
+			if err := json.Indent(&prettyJSON, jsonBytes, "   ", "  "); err != nil {
+				content.WriteString(resultStyle.Render(fmt.Sprintf("   %s", string(jsonBytes))))
+			} else {
+				content.WriteString(resultStyle.Render(prettyJSON.String()))
+			}
+		}
+		content.WriteString("\n")
+	} else {
+		content.WriteString(resultStyle.Render("   Result: (empty)"))
+		content.WriteString("\n")
+	}
+
+	return Message{
+		Sender:       "System",
+		Content:      content.String(),
+		IsToolResult: true,
+		ToolResponse: &ToolResponse{
+			Id:       toolCallID,
+			Name:     toolName,
+			Response: result,
+		},
+		ToolCall:  &ToolCall{ID: toolCallID, Name: toolName},
+		Timestamp: time.Now(),
+	}
 }

@@ -268,7 +268,7 @@ func (m *Model) sendToStreamCmd(text string) tea.Cmd {
 		}
 
 		// Start a new stream with the request
-		stream, err := m.client.GenAI.StreamGenerateContent(m.streamCtx, request)
+		stream, err := m.client.GenerativeClient.StreamGenerateContent(m.streamCtx, request)
 		if err != nil {
 			log.Printf("Stream Init Error: %v", err)
 			return sendErrorMsg{err: fmt.Errorf("stream creation failed: %w", err)}

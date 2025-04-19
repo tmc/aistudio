@@ -69,15 +69,18 @@ type ExecutableCodeResult = generativelanguagepb.CodeExecutionResult
 
 // Message represents a chat message with optional audio data
 type Message struct {
-	Sender    string // Who sent the message (You, Gemini, System)
-	Content   string // The message text
-	HasAudio  bool   // Whether the message has associated audio
-	AudioData []byte // The raw audio data (if HasAudio is true) - stores the *complete* audio after consolidation
-	IsPlaying bool   // Whether the audio is currently playing
-	IsPlayed  bool   // Whether the audio has been played
+	Sender    senderName // Who sent the message (You, Gemini, System)
+	Content   string     // The message text
+	HasAudio  bool       // Whether the message has associated audio
+	AudioData []byte     // The raw audio data (if HasAudio is true) - stores the *complete* audio after consolidation
+	IsPlaying bool       // Whether the audio is currently playing
+	IsPlayed  bool       // Whether the audio has been played
 
 	IsToolCall bool      // Whether this message is a tool call
 	ToolCall   *ToolCall // The tool call associated with this message (if any)
+
+	IsToolResult bool          // Whether this message is a tool result
+	ToolResponse *ToolResponse // The tool result associated with this message (if any)
 
 	IsExecutableCode       bool                  // Whether this message contains executable code
 	ExecutableCode         *ExecutableCode       // The executable code associated with this message (if any)
@@ -118,6 +121,19 @@ type FocusableComponent interface {
 	IsFocused() bool
 }
 
+// AppState represents the current state of the application
+type AppState string
+
+const (
+	AppStateUnspecified  AppState = "unspecified"
+	AppStateInitializing AppState = "initializing"
+	AppStateResponding   AppState = "responding"
+	AppStateReady        AppState = "ready"
+	AppStateWaiting      AppState = "waiting"
+	AppStateError        AppState = "error"
+	AppStateQuitting     AppState = "quitting"
+)
+
 // Model represents the state of the Bubble Tea application.
 type Model struct {
 	viewport viewport.Model
@@ -138,6 +154,8 @@ type Model struct {
 	sending     bool
 	receiving   bool
 	quitting    bool
+
+	currentState AppState
 
 	// Stream management
 	streamCtx            context.Context
@@ -311,7 +329,7 @@ func (m *Model) ProcessGenerativeLanguageResponse(output api.StreamOutput) {
 	}
 
 	// If token counts are available and this is the final chunk, add them to the last message
-	if output.IsFinalChunk && (output.PromptTokenCount > 0 || output.CandidateTokenCount > 0 || output.TotalTokenCount > 0) && len(m.messages) > 0 {
+	if output.TurnComplete && (output.PromptTokenCount > 0 || output.CandidateTokenCount > 0 || output.TotalTokenCount > 0) && len(m.messages) > 0 {
 		idx := len(m.messages) - 1
 
 		log.Printf("Adding token counts to message %d: Prompt=%d, Response=%d, Total=%d",
