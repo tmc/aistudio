@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"reflect"
@@ -81,6 +82,7 @@ type StreamOutput struct {
 	CodeExecutionResult *generativelanguagepb.CodeExecutionResult // Executable code result data
 
 	SetupComplete *bool
+	TurnComplete  bool
 
 	// Additional feedback and metadata
 	SafetyRatings     []*generativelanguagepb.SafetyRating    // Safety ratings for content
@@ -90,7 +92,6 @@ type StreamOutput struct {
 	PromptTokenCount    int32 // Number of tokens in the prompt (only available at end of response)
 	CandidateTokenCount int32 // Number of tokens in the response (only available at end of response)
 	TotalTokenCount     int32 // Total tokens used (prompt + response, only available at end of response)
-	TurnComplete        bool  // Whether this is the final chunk in the response
 }
 
 // InitClient initializes the underlying Google Cloud Generative Language client.
@@ -284,16 +285,16 @@ func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (gener
 
 	// Set up GenerationConfig with conditional fields
 	genConfig := &generativelanguagepb.GenerationConfig{}
-	// genConfig.Temperature = &config.Temperature
-	// if config.TopP > 0 {
-	// 	genConfig.TopP = &config.TopP
-	// }
-	// if config.TopK > 0 {
-	// 	genConfig.TopK = &config.TopK
-	// }
-	// if config.MaxOutputTokens > 0 {
-	// 	genConfig.MaxOutputTokens = &config.MaxOutputTokens
-	// }
+	genConfig.Temperature = &config.Temperature
+	if config.TopP > 0 {
+		genConfig.TopP = &config.TopP
+	}
+	if config.TopK > 0 {
+		genConfig.TopK = &config.TopK
+	}
+	if config.MaxOutputTokens > 0 {
+		genConfig.MaxOutputTokens = &config.MaxOutputTokens
+	}
 	// Only set voice config if VoiceName is specified
 	if config.VoiceName != "" {
 		genConfig.SpeechConfig = &generativelanguagepb.SpeechConfig{
@@ -316,7 +317,7 @@ func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (gener
 
 	// Set response MIME type if specified
 	if config.ResponseMimeType != "" {
-		// setupMessage.GenerationConfig.ResponseMimeType = config.ResponseMimeType
+		setupMessage.GenerationConfig.ResponseMimeType = config.ResponseMimeType
 	}
 
 	// If output schema is specified, set it in the setup message, and set the mime type to application/json:
@@ -332,6 +333,7 @@ func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (gener
 		}
 		log.Printf("Parsed response schema: %s", prototext.Format(schemaObj))
 		setupMessage.GenerationConfig.ResponseSchema = schemaObj
+		setupMessage.GenerationConfig.ResponseMimeType = "application/json"
 	}
 
 	if setupMessage.GenerationConfig == nil {
@@ -341,13 +343,11 @@ func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (gener
 		generativelanguagepb.GenerationConfig_TEXT,
 	}
 	if config.EnableAudio {
+		// setupMessage.GenerationConfig.ResponseModalities = append(setupMessage.GenerationConfig.ResponseModalities, generativelanguagepb.GenerationConfig_AUDIO)
 		setupMessage.GenerationConfig.ResponseModalities = []generativelanguagepb.GenerationConfig_Modality{
 			generativelanguagepb.GenerationConfig_AUDIO,
 		}
-		// this is causing invalid argument errors, omitting for now
-		//setupMessage.GenerationConfig.ResponseModalities = append(setupMessage.GenerationConfig.ResponseModalities, generativelanguagepb.GenerationConfig_IMAGE)
 	}
-	// todo: image? video
 
 	request := &generativelanguagepb.BidiGenerateContentClientMessage{
 		MessageType: &generativelanguagepb.BidiGenerateContentClientMessage_Setup{
@@ -538,6 +538,11 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 		log.Printf("Extracted grounding metadata")
 		output.GroundingMetadata = resp.GetServerContent().GetGroundingMetadata()
 	}
+	if resp.GetSetupComplete() != nil {
+		log.Printf("Setup complete message received")
+		v := true
+		output.SetupComplete = &v
+	}
 
 	/*
 		case *generativelanguagepb.BidiGenerateContentServerMessage_ServerFeedback:
@@ -585,6 +590,7 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 			log.Printf("Estimated token usage (rough): Response≈%d", estimatedTokens)
 		}
 	}
+	// TODO: move to helper on StreamOutput
 	if output.Text == "" && len(output.Audio) == 0 && output.FunctionCall == nil && output.ExecutableCode == nil && output.CodeExecutionResult == nil && output.TurnComplete == false {
 		log.Printf("Received response chunk contained no processable ouput: %s", prototext.Format(resp))
 	}
@@ -612,6 +618,10 @@ func ExtractOutput(resp *generativelanguagepb.GenerateContentResponse) StreamOut
 				// Extract text
 				if textData := part.GetText(); textData != "" {
 					log.Printf("Extracted text from part: %q", textData)
+					// Always log when we get text to help with debugging
+					if strings.TrimSpace(textData) != "" {
+						log.Printf("RECEIVED TEXT: %q", textData)
+					}
 					output.Text += textData
 				}
 
@@ -760,7 +770,25 @@ func (e *RetryableError) Retry(ctx context.Context, op func() error) error {
 		return e.Err
 	}
 
-	time.Sleep(e.Backoff)
+	// Add jitter to the backoff time (±10%)
+	jitter := float64(e.Backoff) * 0.1 * (2*rand.Float64() - 1)
+	backoffWithJitter := e.Backoff + time.Duration(jitter)
+	if backoffWithJitter < 0 {
+		backoffWithJitter = e.Backoff // Ensure backoff is never negative
+	}
+
+	// Use a timer for backoff that respects context
+	timer := time.NewTimer(backoffWithJitter)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		// Context was canceled or timed out
+		return ctx.Err()
+	case <-timer.C:
+		// Backoff time elapsed, proceed with retry
+	}
+
 	e.Retries++
 	e.Backoff *= 2 // Exponential backoff
 
@@ -782,26 +810,65 @@ func (e *RetryableError) Retry(ctx context.Context, op func() error) error {
 
 // RetryWithExponentialBackoff retries the given operation with exponential backoff.
 func RetryWithExponentialBackoff(ctx context.Context, op func() error, maxRetries int, initialBackoff time.Duration) error {
-	var err error
-	retryableErr := &RetryableError{
-		Retries:    0,
-		MaxRetries: maxRetries,
-		Backoff:    initialBackoff,
+	// Check context before first attempt
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
-	for {
+	// First attempt
+	err := op()
+	if err == nil {
+		return nil // Success on first try
+	}
+
+	// If error is not retryable, return immediately
+	clientErr, ok := err.(*ClientError)
+	if !(ok && clientErr.IsRetryable()) {
+		return err
+	}
+
+	// Set up for retries
+	attempt := 1
+	backoff := initialBackoff
+
+	// Retry loop
+	for attempt <= maxRetries {
+		// Add jitter to backoff (±10%)
+		jitter := float64(backoff) * 0.1 * (2*rand.Float64() - 1)
+		actualBackoff := backoff + time.Duration(jitter)
+		if actualBackoff < 0 {
+			actualBackoff = backoff // Ensure backoff is never negative
+		}
+
+		// Wait with respect to context
+		timer := time.NewTimer(actualBackoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+			// Continue with retry
+		}
+
+		// Attempt the operation
 		err = op()
 		if err == nil {
-			return nil
+			return nil // Success
 		}
 
-		if clientErr, ok := err.(*ClientError); ok && clientErr.IsRetryable() {
-			err = retryableErr.Retry(ctx, op)
-			if err == nil {
-				return nil
-			}
-		} else {
-			return err
+		// Check if error is retryable
+		clientErr, ok := err.(*ClientError)
+		if !(ok && clientErr.IsRetryable()) {
+			return err // Non-retryable error
 		}
+
+		// Prepare for next retry
+		attempt++
+		backoff *= 2 // Exponential backoff
 	}
+
+	// Exhausted all retries
+	return err
 }

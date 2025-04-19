@@ -6,15 +6,17 @@ env HTTP_PROXY=
 # When run with -httprecord flag, it will make real HTTP requests
 # On subsequent runs, it will use the recorded responses
 
-# First we build our test
-go build -o aistudio.exe ./example
+# First we build our test executable from the example directory
+go build -o aistudio.exe ../../example
 exists aistudio.exe
 
 # Run the app in non-interactive mode with a simple prompt
+# This should use the recorded response for "Hello" when not recording
 exec ./aistudio.exe -non-interactive -p "Hello" -audio=false
-stdout .
+# Check for the start of the expected model response
+stdout 'Model response:'
 
-# Then verify it runs with our test API key
+# Verify it runs without client initialization errors (using the test API key or recorded data)
 ! stderr 'Error initializing client'
 
 # Clean up

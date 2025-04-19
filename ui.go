@@ -4,346 +4,258 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
 	"github.com/charmbracelet/lipgloss"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// formatMessageText formats a message as a string for display, including audio UI
-func (m *Model) formatMessageText(msg Message, messageIndex int) string { // Added m *Model, messageIndex int
-	var senderStyle lipgloss.Style
-	switch msg.Sender {
-	case "You":
-		senderStyle = senderUserStyle
-	case "Gemini":
-		senderStyle = senderModelStyle
-	default:
-		senderStyle = senderSystemStyle
+func (m *Model) formatMessageText(msg Message, messageIndex int) string {
+	// Skip empty messages unless they have special formatting
+	if msg.Content == "" &&
+		!msg.HasAudio &&
+		!msg.IsToolCall &&
+		!msg.IsToolResponse &&
+		msg.FunctionCall == nil &&
+		!msg.IsExecutableCode &&
+		!msg.IsExecutableCodeResult {
+		return "" // Skip empty messages that don't have special formatting
 	}
 
-	// Keep sender header even if content is empty
-	header := senderStyle.Render(string(msg.Sender) + ":")
-
-	cleanedContent := msg.Content
-
-	var audioLine strings.Builder
-	if msg.HasAudio {
-		// Check if this message corresponds to the active audio player
-		isActiveAudio := m.activeAudioPlayer != nil && m.activeAudioPlayer.MessageIndex == messageIndex
-
-		if isActiveAudio {
-			// Use the audio player component to render the audio line
-			audioLine.WriteString(m.activeAudioPlayer.View())
-			audioLine.WriteString("\n")
-		} else {
-			// Render a static representation for non-active audio players
-			totalSeconds := 0.0
-			if len(msg.AudioData) > 0 {
-				// Calculate total duration from stored *complete* audio data length
-				totalSeconds = float64(len(msg.AudioData)) / 48000.0
-			} else if msg.IsPlaying && m.currentAudio != nil && m.currentAudio.Duration > 0 && m.currentAudio.MessageIndex == messageIndex {
-				// Fallback ONLY if message data is missing but currently playing chunk matches index
-				totalSeconds = m.currentAudio.Duration
-				log.Printf("[UI Warning] Using currentAudio duration for Msg #%d as AudioData is empty.", messageIndex)
-			}
-			totalDurationStr := formatDuration(totalSeconds) // helpers.go
-
-			audioIcon := "❓"
-			timestampStr := fmt.Sprintf("??:?? / %s", totalDurationStr)
-			progressBar := strings.Repeat("╌", progressBarWidth) // Default empty bar
-			helpText := ""                                       // Hint for Play/Replay
-
-			if msg.IsPlaying {
-				audioIcon = audioPlayIcon // Green playing icon from constants.go
-
-				// --- Get Progress ---
-				elapsedSeconds := 0.0
-				// Check if the currently playing audio chunk corresponds to THIS message index
-				if m.currentAudio != nil && m.currentAudio.IsProcessing && m.currentAudio.MessageIndex == messageIndex && !m.currentAudio.StartTime.IsZero() {
-					elapsedSeconds = time.Since(m.currentAudio.StartTime).Seconds()
-					// Ensure elapsed doesn't exceed total due to timing issues
-					elapsedSeconds = math.Min(elapsedSeconds, totalSeconds)
-				}
-				elapsedSeconds = math.Max(0, elapsedSeconds) // Ensure non-negative
-				elapsedDurationStr := formatDuration(elapsedSeconds)
-				timestampStr = fmt.Sprintf("%s / %s", elapsedDurationStr, totalDurationStr)
-
-				// --- Calculate Progress Bar ---
-				progress := 0.0
-				if totalSeconds > 0 {
-					progress = elapsedSeconds / totalSeconds
-				}
-				progress = math.Min(1.0, math.Max(0.0, progress)) // Clamp progress [0, 1]
-				filledWidth := int(progress * float64(progressBarWidth))
-				emptyWidth := progressBarWidth - filledWidth
-				progressBar = strings.Repeat("━", filledWidth) + strings.Repeat("╌", emptyWidth)
-
-			} else if msg.IsPlayed {
-				audioIcon = audioPlayedIcon // Gray check for played
-				timestampStr = fmt.Sprintf("%s / %s", totalDurationStr, totalDurationStr)
-				progressBar = strings.Repeat("━", progressBarWidth) // Full bar
-				helpText = "[R]eplay"
-			} else {
-				// Available but not played
-				audioIcon = audioReadyIcon // Magenta speaker
-				timestampStr = fmt.Sprintf("00:00 / %s", totalDurationStr)
-				// progressBar remains empty ("╌"...)
-				helpText = "[P]lay"
-			}
-
-			// Assemble the audio line
-			audioLine.WriteString(audioIcon)
-			audioLine.WriteString(" ")
-			audioLine.WriteString(audioTimeStyle.Render(timestampStr))
-			audioLine.WriteString(" ")
-			audioLine.WriteString(audioProgStyle.Render(progressBar))
-			if helpText != "" {
-				audioLine.WriteString(" ")
-				audioLine.WriteString(audioHelpStyle.Render(helpText))
-			}
-			audioLine.WriteString("\n")
-		}
-	}
-
-	// Assemble the final message
 	var finalMsg strings.Builder
 
 	// Add message header
-	finalMsg.WriteString(header)
-	finalMsg.WriteString("\n")
+	finalMsg.WriteString(m.formatMessageHeader(msg))
 
-	// Special handling to make audio playback in-line with Gemini messages
-	if msg.HasAudio && msg.Sender == "Gemini" {
-		// Get just the audio UI line without any wrapping newlines
-		audioString := strings.TrimSpace(audioLine.String())
-
-		// For Gemini messages with audio, place the content and audio inline
-		if cleanedContent != "" {
-			// Add the message text
-			finalMsg.WriteString(cleanedContent)
-
-			// Add the audio controls on the same line as the content
-			if audioString != "" {
-				// Add a space between content and audio controls
-				finalMsg.WriteString(" ")
-				finalMsg.WriteString(audioString)
-			}
-
-			finalMsg.WriteString("\n") // Just one newline after the combined content
-		} else if audioString != "" {
-			// If there's no content, just show the audio controls
-			finalMsg.WriteString(audioString)
-			finalMsg.WriteString("\n")
-		}
-	} else if msg.HasAudio {
-		// For other senders with audio, keep them separate
-		audioString := strings.TrimSpace(audioLine.String())
-
-		if cleanedContent != "" {
-			finalMsg.WriteString(cleanedContent)
-			finalMsg.WriteString("\n")
-		}
-
-		if audioString != "" {
-			finalMsg.WriteString(audioString)
-			finalMsg.WriteString("\n")
-		}
-	} else if msg.IsToolCall || msg.FunctionCall != nil {
-		// For tool calls or function calls, show the content and info about the tool
-		if cleanedContent != "" {
-			finalMsg.WriteString(cleanedContent)
-			finalMsg.WriteString("\n")
-		}
-
-		// Handle regular tool calls
-		if msg.IsToolCall && msg.ToolCall != nil {
-			toolCallStr := fmt.Sprintf("Tool: %s", msg.ToolCall.Name)
-			toolCallStr = toolCallStyle.Render(toolCallStr)
-			finalMsg.WriteString(toolCallStr)
-			finalMsg.WriteString("\n")
-
-			// Show tool arguments if available
-			if len(msg.ToolCall.Arguments) > 0 {
-				var args bytes.Buffer
-				if err := json.Indent(&args, msg.ToolCall.Arguments, "", "  "); err != nil {
-					args.Write(msg.ToolCall.Arguments) // Fallback if formatting fails
-				}
-
-				finalMsg.WriteString("Arguments:\n")
-				finalMsg.WriteString("```json\n")
-				finalMsg.WriteString(args.String())
-				finalMsg.WriteString("\n```\n")
-			}
-		}
-
-		// Handle BidiGenerateContent function calls
-		if msg.FunctionCall != nil {
-			callStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")) // Teal for function calls
-
-			funcName := msg.FunctionCall.Name
-			finalMsg.WriteString(callStyle.Render(fmt.Sprintf("📞 Function Call: %s", funcName)))
-			finalMsg.WriteString("\n")
-
-			// Format and display arguments
-			if msg.FunctionCall.Args != nil {
-				argsBytes, err := json.MarshalIndent(msg.FunctionCall.Args, "", "  ")
-				if err != nil {
-					argsBytes = []byte(fmt.Sprintf("%v", msg.FunctionCall.Args))
-				}
-
-				finalMsg.WriteString("Arguments:\n")
-				finalMsg.WriteString("```json\n")
-				finalMsg.WriteString(string(argsBytes))
-				finalMsg.WriteString("\n```\n")
-			}
-		}
-	} else if msg.IsExecutableCode {
-		// For executable code, show content and the code block
-		codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // Blue for code
-
-		if cleanedContent != "" {
-			finalMsg.WriteString(cleanedContent)
-			finalMsg.WriteString("\n")
-		}
-		if msg.ExecutableCode != nil {
-			languageInfo := fmt.Sprintf("```%s", msg.ExecutableCode.Language)
-			finalMsg.WriteString(codeStyle.Render(languageInfo))
-			finalMsg.WriteString("\n")
-			finalMsg.WriteString(msg.ExecutableCode.Code)
-			finalMsg.WriteString("\n")
-			finalMsg.WriteString(codeStyle.Render("```"))
-			finalMsg.WriteString("\n")
-		}
-	} else if msg.IsExecutableCodeResult {
-		// For executable code results, show content and result
-		if cleanedContent != "" {
-			finalMsg.WriteString(cleanedContent)
-			finalMsg.WriteString("\n")
-		}
-		if msg.ExecutableCodeResult != nil {
-			// Since we don't know the exact field access pattern, use a more general approach
-			outputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // Green for success
-			finalMsg.WriteString(outputStyle.Render("Code Execution Result:"))
-			finalMsg.WriteString("\n")
-			finalMsg.WriteString("```\n")
-			// Just show the output as-is, which should contain either the result or the error
-			finalMsg.WriteString(fmt.Sprintf("%v", msg.ExecutableCodeResult))
-			finalMsg.WriteString("\n```\n")
-		}
-	} else {
-		// For messages without audio
-		if cleanedContent != "" {
-			finalMsg.WriteString(cleanedContent)
-			finalMsg.WriteString("\n")
-		}
-
-		// Display safety ratings if present
-		if len(msg.SafetyRatings) > 0 {
-			safetyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // Orange for safety info
-
-			finalMsg.WriteString(safetyStyle.Render("Safety Ratings:"))
-			finalMsg.WriteString("\n")
-
-			for _, rating := range msg.SafetyRatings {
-				var ratingStyle lipgloss.Style
-
-				// Color-code based on probability
-				switch rating.Probability {
-				case "HIGH":
-					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // Red for high
-				case "MEDIUM":
-					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // Orange for medium
-				case "LOW":
-					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // Yellow for low
-				default:
-					ratingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // Green for negligible/unspecified
-				}
-
-				ratingStr := fmt.Sprintf("• %s: %s", rating.Category, rating.Probability)
-				if rating.Score > 0 {
-					ratingStr += fmt.Sprintf(" (%.3f)", rating.Score)
-				}
-				if rating.Blocked {
-					ratingStr += " [BLOCKED]"
-				}
-
-				finalMsg.WriteString(ratingStyle.Render(ratingStr))
-				finalMsg.WriteString("\n")
-			}
-		}
-
-		// Display grounding metadata if present
-		if msg.HasGroundingMetadata && msg.GroundingMetadata != nil {
-			gmData := msg.GroundingMetadata
-
-			// Display grounding chunks if available
-			if len(gmData.Chunks) > 0 {
-				chunkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")) // Light blue for chunks
-				finalMsg.WriteString(chunkStyle.Render("Grounding Sources:"))
-				finalMsg.WriteString("\n")
-
-				for i, chunk := range gmData.Chunks {
-					chunkStyle := lipgloss.NewStyle()
-					if chunk.Selected {
-						chunkStyle = chunkStyle.Bold(true)
-					}
-
-					chunkInfo := fmt.Sprintf("%d. %s", i+1, chunk.Title)
-					if chunk.URI != "" {
-						chunkInfo += fmt.Sprintf(" (%s)", chunk.URI)
-					}
-
-					finalMsg.WriteString(chunkStyle.Render(chunkInfo))
-					finalMsg.WriteString("\n")
-				}
-			}
-
-			// Display web search queries if available
-			if len(gmData.WebSearchQueries) > 0 {
-				queryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")) // Teal for queries
-				finalMsg.WriteString(queryStyle.Render("Suggested Search Queries:"))
-				finalMsg.WriteString("\n")
-
-				for i, query := range gmData.WebSearchQueries {
-					finalMsg.WriteString(fmt.Sprintf("%d. %s", i+1, query))
-					finalMsg.WriteString("\n")
-				}
-			}
-		}
-
-		// Display token counts if enabled and available
-		if m.displayTokenCounts && msg.HasTokenInfo {
-			tokenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Faint(true) // Gray, faint for token counts
-			tokenInfo := fmt.Sprintf("Tokens: %d prompt + %d response = %d total",
-				msg.PromptTokenCount, msg.ResponseTokenCount, msg.TotalTokenCount)
-			finalMsg.WriteString(tokenStyle.Render(tokenInfo))
-			finalMsg.WriteString("\n")
-		}
+	switch {
+	case msg.HasAudio:
+		m.formatAudioMessage(&finalMsg, msg, messageIndex)
+	case msg.IsToolCall:
+		finalMsg.WriteString(msg.Content) // Pre-formatted content
+	case msg.IsToolResponse:
+		finalMsg.WriteString(msg.Content) // Pre-formatted content
+	case msg.FunctionCall != nil:
+		m.formatFunctionCallMessage(&finalMsg, msg)
+	case msg.IsExecutableCode:
+		// m.formatExecutableCodeMessage(&finalMsg, msg)
+	case msg.IsExecutableCodeResult:
+		// m.formatExecutableCodeResultMessage(&finalMsg, msg)
+	default:
+		m.formatDefaultMessage(&finalMsg, msg)
 	}
-
-	// Add an extra newline for spacing between messages
-	finalMsg.WriteString("\n")
 
 	return finalMsg.String()
 }
 
-// formatAllMessages formats all messages as a single string for display
-// It now requires the model to pass context to formatMessageText
-func (m *Model) formatAllMessages() string {
+func (m *Model) formatMessageHeader(msg Message) string {
+	var senderStyle lipgloss.Style
+	switch msg.Sender {
+	case senderNameUser:
+		senderStyle = senderUserStyle
+	case senderNameModel:
+		senderStyle = senderModelStyle
+	default:
+		senderStyle = senderSystemStyle
+	}
+	return senderStyle.Render(string(msg.Sender) + ": ")
+}
+
+func (m *Model) formatAudioMessage(finalMsg *strings.Builder, msg Message, messageIndex int) {
+	audioLine := m.formatAudioLine(msg, messageIndex)
+
+	if msg.Sender == senderNameModel {
+		// Inline audio with content for Gemini messages
+		if msg.Content != "" {
+			finalMsg.WriteString(msg.Content)
+			finalMsg.WriteString(" ")
+		}
+		finalMsg.WriteString(strings.TrimSpace(audioLine))
+	} else {
+		// Separate audio and content for other senders
+		if msg.Content != "" {
+			finalMsg.WriteString(msg.Content)
+		}
+		finalMsg.WriteString(audioLine)
+	}
+}
+
+func (m *Model) formatAudioLine(msg Message, messageIndex int) string {
+	audioStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true) // Magenta for audio
+	audioLine := audioStyle.Render(fmt.Sprintf("🔊 Audio: "))
+	return audioLine
+}
+
+func (m *Model) formatFunctionCallMessage(finalMsg *strings.Builder, msg Message) {
+	if msg.Content != "" {
+		finalMsg.WriteString(msg.Content)
+		finalMsg.WriteString("\n")
+	}
+	callStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
+	finalMsg.WriteString(callStyle.Render(fmt.Sprintf("📞 Function Call: %s", msg.FunctionCall.Name)))
+	finalMsg.WriteString("\n")
+
+	if msg.FunctionCall.Args != nil {
+		argsBytes, err := json.MarshalIndent(msg.FunctionCall.Args, "", "  ")
+		if err != nil {
+			argsBytes = []byte(fmt.Sprintf("%v", msg.FunctionCall.Args))
+		}
+		finalMsg.WriteString("```json\n")
+		finalMsg.WriteString(string(argsBytes))
+		finalMsg.WriteString("\n```\n")
+	}
+}
+
+func (m *Model) formatExecutableCodeMessage(finalMsg *strings.Builder, msg Message) {
+	codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	if msg.Content != "" {
+		finalMsg.WriteString(msg.Content)
+		finalMsg.WriteString("\n")
+	}
+	if msg.ExecutableCode != nil {
+		finalMsg.WriteString(codeStyle.Render("📝 Code Execution:"))
+		finalMsg.WriteString("\n")
+		finalMsg.WriteString(fmt.Sprintf("```%s\n", msg.ExecutableCode.Language))
+		finalMsg.WriteString(msg.ExecutableCode.Code)
+		finalMsg.WriteString("\n```\n")
+	}
+}
+
+func (m *Model) formatExecutableCodeResultMessage(finalMsg *strings.Builder, msg Message) {
+	outputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	if msg.Content != "" {
+		finalMsg.WriteString(msg.Content)
+		finalMsg.WriteString("\n")
+	}
+	if msg.ExecutableCodeResult != nil {
+		finalMsg.WriteString(outputStyle.Render("✅ Code Result:"))
+		finalMsg.WriteString("\n```\n")
+		finalMsg.WriteString(fmt.Sprintf("%v", msg.ExecutableCodeResult))
+		finalMsg.WriteString("\n```\n")
+	}
+}
+
+func (m *Model) formatDefaultMessage(finalMsg *strings.Builder, msg Message) {
+	if msg.Content != "" {
+		finalMsg.WriteString(msg.Content)
+	}
+	// TODO:implement // m.formatSafetyRatings(finalMsg, msg)
+	// TODO:implement // m.formatGroundingMetadata(finalMsg, msg)
+	m.formatTokenCounts(finalMsg, msg)
+}
+
+func (m *Model) formatTokenCounts(finalMsg *strings.Builder, msg Message) {
+	if msg.TokenCounts != nil {
+		tokenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("63"))
+		finalMsg.WriteString(tokenStyle.Render(fmt.Sprintf("Token Counts: %d (Input) / %d (Output)", msg.TokenCounts.PromptTokenCount, msg.TokenCounts.ResponseTokenCount)))
+		finalMsg.WriteString("\n")
+	}
+}
+
+// renderAllMessages formats all messages as a single string for display
+// Groups tool calls with their results and adds borders around messages
+func (m *Model) renderAllMessages() string {
 	var formattedMessages []string
+	var messageBuffer strings.Builder
+	var pendingToolCall *Message
+
+	// Get width for message borders
+	availWidth := m.width - 4 // Account for borders and padding
+
+	// Different border styles based on sender
+	systemMessageStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")). // Gray for system messages
+		Padding(0, 1).
+		Width(availWidth)
+
+	toolCallStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("205")). // Magenta for tool calls
+		Padding(0, 1).
+		Width(availWidth)
+
+	// Helper to choose the right style for a message
+	getBorderStyle := func(msg Message) lipgloss.Style {
+		if msg.IsToolCall || msg.IsToolResponse {
+			return toolCallStyle
+		}
+		return systemMessageStyle
+	}
+	// lipBorderForeground(getBorderStyle(msg))
+	// Padding(0, 1)
+
 	for i, msg := range m.messages {
-		// Pass the model 'm' and the message index 'i'
+		messageBorderStyle := getBorderStyle(msg)
+		// Handle tool call pairing
+		if pendingToolCall != nil && msg.IsToolResponse &&
+			msg.ToolResponse != nil && pendingToolCall.ToolCall != nil &&
+			msg.ToolResponse.Id == pendingToolCall.ToolCall.ID {
+			// Add this tool response to the buffered tool call
+			messageBuffer.WriteString(m.formatMessageText(msg, i))
+
+			// Border and add the complete tool call + result
+			if messageBuffer.Len() > 0 {
+				formattedMessages = append(formattedMessages,
+					messageBorderStyle.Render(messageBuffer.String()))
+				messageBuffer.Reset()
+			}
+			pendingToolCall = nil
+			continue
+		}
+
+		// Handle beginning of a new tool call
+		if msg.IsToolCall && pendingToolCall == nil {
+			// If there's anything in the buffer, add it first
+			if messageBuffer.Len() > 0 {
+				formattedMessages = append(formattedMessages,
+					messageBorderStyle.Render(messageBuffer.String()))
+				messageBuffer.Reset()
+			}
+
+			// Start a new buffer with this tool call
+			messageBuffer.WriteString(m.formatMessageText(msg, i))
+			pendingToolCall = &msg
+			continue
+		}
+
+		// For non-tool messages or unpaired tool calls/responses
+		if pendingToolCall != nil {
+			// Add the pending tool call as it wasn't paired
+			formattedMessages = append(formattedMessages,
+				messageBorderStyle.Render(messageBuffer.String()))
+			messageBuffer.Reset()
+			pendingToolCall = nil
+		}
+
+		// Format and add the current message
 		formatted := m.formatMessageText(msg, i)
 		if formatted != "" {
-			formattedMessages = append(formattedMessages, formatted)
+			formattedMessages = append(formattedMessages,
+				messageBorderStyle.Render(formatted))
 		}
 	}
-	// Use a single newline to join, as formatMessageText now adds trailing newlines
-	return strings.Join(formattedMessages, "")
+	defaultBorderStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")). // Gray for system messages
+		Padding(0, 1).
+		Width(availWidth)
+
+	// Add any remaining buffered content
+	if messageBuffer.Len() > 0 {
+		formattedMessages = append(formattedMessages,
+			defaultBorderStyle.Render(messageBuffer.String()))
+	}
+
+	// Join with spacing between bordered messages
+	return strings.Join(formattedMessages, "\n")
 }
 
 // renderToolApprovalModal renders a modal for approving a tool call
@@ -653,113 +565,332 @@ func (m Model) audioStatusView() string {
 	return ""
 }
 
-// footerView renders the footer for the UI
+// footerView renders the simplified footer for the UI
 func (m Model) footerView() string {
 	var footer strings.Builder
 
-	// Add optional boxes first
-	logBox := m.logMessagesView()
-	audioBox := m.audioStatusView()
+	// Define base styles
+	statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("63"))
+	spinnerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	toolStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // Red for errors
+	inputModeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("213"))
 
-	if logBox != "" {
-		footer.WriteString(logBox)
-		footer.WriteRune('\n')
-	}
-	if audioBox != "" {
-		footer.WriteString(audioBox)
-		footer.WriteRune('\n')
-	}
+	// Build the status line
+	var statusLine strings.Builder
 
-	// --- Input Area and Status Line ---
-
-	// Input mode indicator (Mic or Video)
-	var inputMode string
+	// Add input mode indicator if active
 	if m.micActive {
-		inputMode = inputModeStyle.Render("[Mic ON]") // Display Mic status if active
+		statusLine.WriteString(inputModeStyle.Render("[Mic ON] "))
 	} else if m.videoInputMode != VideoInputNone {
-		inputMode = inputModeStyle.Render(fmt.Sprintf("[%s ON]", m.videoInputMode)) // Display Video status if active
+		statusLine.WriteString(inputModeStyle.Render(fmt.Sprintf("[%s ON] ", m.videoInputMode)))
 	}
-	// If neither is active, inputMode remains an empty string
 
-	// Status indicator
-	var status string
-	if m.err != nil {
-		errStr := fmt.Sprintf("Error: %v", m.err)
-		// Truncate error if too long for status line
-		maxErrWidth := m.width / 3 // Limit error display width
-		if lipgloss.Width(errStr) > maxErrWidth {
-			// Basic truncation, might cut mid-word
-			errStr = errStr[:maxErrWidth-3] + "..."
-		}
-		status = errorStyle.Render(errStr)
-	} else if !m.streamReady && !m.quitting {
-		status = m.spinner.View() + " Connecting..."
-	} else if m.sending {
-		status = m.spinner.View() + " Sending..."
-	} else if m.receiving && m.streamReady {
-		// Only show receiving if not playing audio (playing is more specific)
-		if !m.isAudioProcessing {
-			status = statusStyle.Render("Connected...")
+	// Show current state with a nice spinner when waiting
+	switch m.currentState {
+	case AppStateWaiting:
+		if m.isAudioProcessing && m.enableAudio {
+			statusLine.WriteString(spinnerStyle.Render(m.spinner.View()) + " " + statusStyle.Render("Playing audio..."))
+		} else if m.processingTool || len(m.pendingToolCalls) > 0 {
+			statusLine.WriteString(spinnerStyle.Render(m.spinner.View()) + " " + toolStyle.Render("Processing tool..."))
 		} else {
-			status = m.spinner.View() + " Playing audio..." // Show playing status here too
+			statusLine.WriteString(spinnerStyle.Render(m.spinner.View()) + " " + statusStyle.Render("Waiting for response..."))
 		}
-	} else if m.isAudioProcessing && m.enableAudio {
-		status = m.spinner.View() + " Playing audio..."
-	} else if m.streamReady {
-		status = statusStyle.Render("Ready.")
-	} else {
-		status = statusStyle.Render("Disconnected. Ctrl+C exit.")
+	case AppStateInitializing:
+		statusLine.WriteString(spinnerStyle.Render(m.spinner.View()) + " " + statusStyle.Render("Initializing..."))
+	case AppStateReady:
+		if m.isAudioProcessing && m.enableAudio {
+			statusLine.WriteString(spinnerStyle.Render(m.spinner.View()) + " " + statusStyle.Render("Playing audio..."))
+		} else {
+			statusLine.WriteString(statusStyle.Render("Ready"))
+		}
+	case AppStateError:
+		if m.err != nil {
+			errStr := fmt.Sprintf("Error: %v", m.err)
+			statusLine.WriteString(errorStyle.Render(errStr))
+		} else {
+			statusLine.WriteString(errorStyle.Render("Error"))
+		}
+	default:
+		statusLine.WriteString(statusStyle.Render(string(m.currentState)))
 	}
 
-	// Help text
+	// For help text
 	var helpParts []string
-	helpParts = append(helpParts, "Ctrl+M: Mic")
+	helpParts = append(helpParts, "Enter: Send")
+	if m.micActive || m.enableAudio {
+		helpParts = append(helpParts, "Ctrl+M: Mic")
+	}
 	if m.historyEnabled {
 		helpParts = append(helpParts, "Ctrl+H: Save History")
 	}
 	if m.enableTools {
 		helpParts = append(helpParts, "Ctrl+T: Tools")
 	}
-	helpParts = append(helpParts, "Ctrl+S: Settings")
+	if m.enableAudio {
+		helpParts = append(helpParts, "Ctrl+P: Play/Pause")
+		helpParts = append(helpParts, "Ctrl+R: Replay")
+	}
 	helpParts = append(helpParts, "Tab: Navigate")
 	helpParts = append(helpParts, "Ctrl+C: Quit")
+
 	help := statusStyle.Render(strings.Join(helpParts, " | "))
 
-	// Layout status line elements
-	statusWidth := lipgloss.Width(status)
-	inputModeWidth := lipgloss.Width(inputMode)
-	helpWidth := lipgloss.Width(help)
-
-	// Calculate space for the spacer between status/input and help
-	// Ensure total doesn't exceed available width
-	availableWidth := m.width - statusWidth - inputModeWidth - helpWidth
-	spacerWidth := availableWidth - 2 // Subtract 2 for minimal spacing around spacer
-
-	if spacerWidth < 1 {
-		spacerWidth = 1 // Ensure at least one space
-	}
-	spacer := strings.Repeat(" ", spacerWidth)
-
-	// Construct status line, ensuring it doesn't overflow
-	statusLine := lipgloss.NewStyle().Width(m.width).Render(
-		lipgloss.JoinHorizontal(lipgloss.Bottom, status, " ", inputMode, spacer, help),
-	)
-
-	// Text area
-	textAreaView := m.textarea.View()
-
-	// Combine input area and status line
-	footerElements := []string{"", textAreaView, statusLine} // Start with empty line, text area, status line
-
-	// Prepend tools info only if tools are enabled
+	// Show model and tool info at the top of footer
+	var infoLine string
 	if m.enableTools && m.toolManager != nil {
-		toolsInfoView := fmt.Sprintf("Tools: %d available", len(m.toolManager.RegisteredToolDefs))
-		toolsInfoStyled := statusStyle.Render(toolsInfoView) // Use status style for consistency
-		// Insert tools info after the initial empty line for spacing
-		footerElements = append([]string{footerElements[0], toolsInfoStyled}, footerElements[1:]...)
+		toolCount := len(m.toolManager.RegisteredToolDefs)
+		infoLine = statusStyle.Render(fmt.Sprintf("Model: %s | Tools: %d available", m.modelName, toolCount))
+	} else {
+		infoLine = statusStyle.Render(fmt.Sprintf("Model: %s", m.modelName))
 	}
 
-	footer.WriteString(lipgloss.JoinVertical(lipgloss.Left, footerElements...))
+	// Combine into a nice footer
+	footer.WriteString(infoLine)
+	footer.WriteString("\n")
+	footer.WriteString(statusLine.String())
+	footer.WriteString("  ")
+	footer.WriteString(help)
+	footer.WriteString("\n")
+	footer.WriteString(m.textarea.View())
 
 	return footer.String()
+}
+
+// formatMessage creates a Message from sender and content
+func formatMessage(sender senderName, content string) Message {
+	return Message{
+		Sender:    sender,
+		Content:   content,
+		HasAudio:  false, // Default, can be updated later
+		Timestamp: time.Now(),
+	}
+}
+
+// formatError creates an error Message
+func formatError(err error) Message {
+	return Message{
+		Sender:    "System",
+		Content:   fmt.Sprintf("Error: %v", err),
+		HasAudio:  false,
+		Timestamp: time.Now(),
+	}
+}
+
+// formatErrorString formats an error as a string for the UI
+func formatErrorString(err error) string {
+	return errorStyle.Render(fmt.Sprintf("Error: %v", err))
+}
+
+// detectAudioPlayer attempts to find a suitable audio player command
+func detectAudioPlayer() string {
+	var cmd string
+	var playerPath string
+	var err error
+
+	// Try ffplay (FFmpeg) first - handles stdin well
+	if playerPath, err = exec.LookPath("ffplay"); err == nil {
+		// Note: `-i -` reads from stdin. Assumes raw PCM with format flags.
+		// WAV header *might* also work with ffplay but raw is cleaner if flags are right.
+		cmd = fmt.Sprintf("%s -autoexit -nodisp -loglevel error -f %s -ar %d -ac 1 -i -", playerPath, audioFormat, audioSampleRate)
+		log.Printf("Auto-detected audio player: %s (using ffplay)", cmd)
+		return cmd
+	}
+
+	// Try Linux-specific players
+	if runtime.GOOS == "linux" {
+		if playerPath, err = exec.LookPath("aplay"); err == nil {
+			// aplay needs specific format flags for raw PCM from stdin
+			cmd = fmt.Sprintf("%s -q -c 1 -r %d -f %s -", playerPath, audioSampleRate, "S16_LE") // S16_LE matches s16le
+			log.Printf("Auto-detected audio player: %s (using aplay)", cmd)
+			return cmd
+		}
+		if playerPath, err = exec.LookPath("paplay"); err == nil {
+			// PulseAudio player, also needs format flags for raw PCM
+			cmd = fmt.Sprintf("%s --raw --channels=1 --rate=%d --format=%s", playerPath, audioSampleRate, audioFormat)
+			log.Printf("Auto-detected audio player: %s (using paplay)", cmd)
+			return cmd
+		}
+	}
+
+	// Try macOS player (afplay) - requires temp files
+	if runtime.GOOS == "darwin" {
+		if playerPath, err = exec.LookPath("afplay"); err == nil {
+			log.Println("Detected 'afplay'. Will use temp files for playback.")
+			// Return just "afplay" as the command name. Playback logic handles the rest.
+			return "afplay"
+		} else {
+			log.Println("Info: 'ffplay' not found. For best audio on macOS, install FFmpeg (`brew install ffmpeg`).")
+		}
+	}
+
+	// Try ffmpeg as a player (less common, might depend on output device setup)
+	if playerPath, err = exec.LookPath("ffmpeg"); err == nil {
+		audioOutput := "alsa" // Default for Linux
+		if runtime.GOOS == "darwin" {
+			audioOutput = "coreaudio"
+		} else if runtime.GOOS == "windows" {
+			audioOutput = "dsound" // Example for Windows DirectSound
+		}
+		// Reads raw PCM from stdin, outputs to default audio device
+		cmd = fmt.Sprintf("%s -f %s -ar %d -ac 1 -i - -f %s -", playerPath, audioFormat, audioSampleRate, audioOutput)
+		log.Printf("Auto-detected audio player: %s (using ffmpeg)", cmd)
+		return cmd
+	}
+
+	// Fallback if nothing found
+	if runtime.GOOS == "windows" {
+		log.Println("Warning: Audio playback auto-detect failed for Windows. Install FFmpeg or use WithAudioPlayerCommand.")
+	} else {
+		log.Println("Warning: Could not auto-detect a suitable audio player. Please install ffplay, aplay, paplay, or use WithAudioPlayerCommand.")
+	}
+	return "" // Return empty string if no player found
+}
+
+// logInterceptor implements io.Writer to capture log output for display in UI
+type logInterceptor struct {
+	model    *Model
+	original io.Writer // The original log output
+}
+
+func (li *logInterceptor) Write(p []byte) (n int, err error) {
+	message := string(p)
+
+	// Add message to the model's log messages (if enabled in model)
+	if li.model != nil && li.model.maxLogMessages > 0 {
+		// Trim whitespace for cleaner display
+		trimmedMessage := strings.TrimSpace(message)
+		if trimmedMessage != "" { // Avoid adding empty lines
+			// Add to the model's log messages
+			li.model.logMessages = append(li.model.logMessages, trimmedMessage)
+			// Trim to max length
+			if len(li.model.logMessages) > li.model.maxLogMessages {
+				li.model.logMessages = li.model.logMessages[len(li.model.logMessages)-li.model.maxLogMessages:]
+			}
+			// Send message to update UI if needed (optional)
+			// tea.Batch(logMessageMsg{message: trimmedMessage})? Needs careful handling.
+		}
+	}
+
+	// Write to the original log output (e.g., file)
+	if li.original != nil {
+		// Write original bytes to preserve formatting in log file
+		return li.original.Write(p)
+	}
+
+	return len(p), nil
+}
+
+// formatDuration converts total seconds into MM:SS format.
+func formatDuration(totalSeconds float64) string {
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+	// Round to nearest second for display consistency
+	ts := int(math.Round(totalSeconds))
+	minutes := ts / 60
+	seconds := ts % 60
+	return fmt.Sprintf("%02d:%02d", minutes, seconds)
+}
+
+// formatToolCallMessage creates a Message for a tool call with enhanced formatting
+func formatToolCallMessage(toolCall ToolCall, status ToolCallStatus) Message {
+	var content strings.Builder
+	toolCallStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true) // Magenta style for tool calls
+	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))                  // Subtle gray for IDs
+	spinnerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))             // Orange for spinner
+	statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))               // Blue for status
+
+	content.WriteString(toolCallStyle.Render(fmt.Sprintf("🔧 Tool Call: %s", toolCall.Name)))
+	content.WriteString(" ")
+	content.WriteString(idStyle.Render(fmt.Sprintf("(ID: %s)", toolCall.ID)))
+
+	// Add a spinner or status indicator based on the status
+	switch status {
+	case ToolCallStatusRunning:
+		content.WriteString(" ")
+
+		// Use a more animated spinner character based on the current time
+		// This will create an animation effect when rendering is updated
+		spinnerChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		spinnerIndex := int(time.Now().UnixNano()/100000000) % len(spinnerChars)
+		spinnerChar := spinnerChars[spinnerIndex]
+
+		content.WriteString(spinnerStyle.Render(fmt.Sprintf("%s Running...", spinnerChar)))
+	case ToolCallStatusPending:
+		content.WriteString(" ")
+		content.WriteString(spinnerStyle.Render("⏳ Pending..."))
+	case ToolCallStatusCompleted:
+		content.WriteString(" ")
+		content.WriteString(statusStyle.Render("✓ Completed"))
+	case ToolCallStatusRejected:
+		content.WriteString(" ")
+		content.WriteString(statusStyle.Render("✗ Rejected"))
+	}
+	content.WriteString("\n")
+
+	// Format arguments
+	if len(toolCall.Arguments) > 0 {
+		var args bytes.Buffer
+		if err := json.Indent(&args, toolCall.Arguments, "", "  "); err != nil {
+			// Fallback if indent fails
+			content.WriteString(fmt.Sprintf("Arguments: %s", string(toolCall.Arguments)))
+		} else {
+			content.WriteString("```json\n")
+			content.WriteString(args.String())
+			content.WriteString("\n```\n")
+		}
+	} else {
+		content.WriteString("Arguments: (none)\n")
+	}
+
+	return Message{
+		Sender:     "System",
+		Content:    content.String(), // Use the pre-formatted content
+		IsToolCall: true,
+		ToolCall:   &toolCall,
+		Timestamp:  time.Now(),
+	}
+}
+
+func formatToolResultMessage(toolCallID, toolName string, result *structpb.Struct, status ToolCallStatus) Message {
+	var content strings.Builder
+	toolResultStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Bold(true)
+	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+
+	content.WriteString(toolResultStyle.Render(fmt.Sprintf("✅ Tool Result: %s", toolName)))
+	content.WriteString(" ")
+	content.WriteString(idStyle.Render(fmt.Sprintf("(ID: %s)", toolCallID)))
+	content.WriteString("\n")
+
+	if result != nil && len(result.Fields) > 0 {
+		jsonBytes, err := protojson.Marshal(result)
+		if err != nil {
+			content.WriteString(fmt.Sprintf("Error marshaling result: %v", err))
+		} else {
+			var prettyJSON bytes.Buffer
+			if err := json.Indent(&prettyJSON, jsonBytes, "", "  "); err != nil {
+				content.WriteString(string(jsonBytes))
+			} else {
+				content.WriteString("```json\n")
+				content.WriteString(prettyJSON.String())
+				content.WriteString("\n```\n")
+			}
+		}
+	} else {
+		content.WriteString("Result: (empty)\n")
+	}
+
+	return Message{
+		Sender:         "System",
+		Content:        content.String(),
+		IsToolResponse: true,
+		ToolResponse: &ToolResponse{
+			Id:       toolCallID,
+			Name:     toolName,
+			Response: result,
+		},
+		ToolCall:  &ToolCall{ID: toolCallID, Name: toolName},
+		Timestamp: time.Now(),
+	}
 }

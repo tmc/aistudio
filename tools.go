@@ -138,7 +138,8 @@ type toolCallSentMsg struct{}
 
 // Message for tool call results
 type toolCallResultMsg struct {
-	results []ToolResponse
+	results []ToolResponse // Each response includes its tool call ID in the Id field
+	call    ToolCall       // The original tool call (for additional context if needed)
 }
 
 // Helper function to convert raw JSON parameters to a proto schema.
@@ -393,47 +394,108 @@ func mkErrorResponseStruct(err error) *structpb.Struct {
 	return s
 }
 
-// executeToolCalls actually executes the tool calls after they've been approved
+// executeToolCalls prepares tool calls and returns a command to execute them asynchronously
 func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
-	var results []ToolResponse
+	if len(toolCalls) == 0 {
+		return nil, nil
+	}
+	
+	// Keep track of which tool calls we've already added to avoid duplicates
+	toolCallIDs := make(map[string]bool)
+	
+	// Execute each tool call asynchronously
 	for _, call := range toolCalls {
-		result := ToolResponse{
-			Id:   call.ID, // Use the correct field name 'Id'
-			Name: call.Name,
-		}
-		registeredTool, exists := m.toolManager.RegisteredTools[call.Name]
-		if !exists || !registeredTool.IsAvailable {
-			result.Response = mkErrorResponseStruct(fmt.Errorf("tool '%s' not found or not available", call.Name))
-			results = append(results, result)
+		// Skip if we've already added this tool call to avoid duplicates
+		if toolCallIDs[call.ID] {
+			log.Printf("Skipping duplicate tool call ID: %s", call.ID)
 			continue
 		}
-
-		// Add a message representing the tool call
-		toolCallMsg := formatToolCallMessage(call, ToolCallStatusPending)
-		m.messages = append(m.messages, toolCallMsg)
-		m.viewport.SetContent(m.formatAllMessages())
-		m.viewport.GotoBottom()
-
-		// Process the tool call
-		response, err := registeredTool.Handler(call.Arguments)
-		resp := map[string]any{
-			"result": response,
+		
+		// Mark this tool call ID as processed
+		toolCallIDs[call.ID] = true
+		
+		// Check if this tool call already exists in the messages
+		alreadyExists := false
+		for _, msg := range m.messages {
+			if msg.IsToolCall && msg.ToolCall != nil && msg.ToolCall.ID == call.ID {
+				alreadyExists = true
+				break
+			}
 		}
-		if err != nil {
-			resp["error"] = err.Error()
+		
+		// Only add a new message if the tool call doesn't already exist
+		if !alreadyExists {
+			// Add a message with the spinner for this tool call
+			toolCallMsg := formatToolCallMessage(call, ToolCallStatusRunning)
+			m.messages = append(m.messages, toolCallMsg)
+			
+			// Update the UI to show the spinner for this tool call
+			m.viewport.SetContent(m.renderAllMessages())
+			m.viewport.GotoBottom()
 		}
-		result.Response, _ = structpb.NewStruct(resp)
-
-		// Add a message representing the tool result
-		resultMsg := formatToolResultMessage(call.ID, call.Name, result.Response, ToolCallStatusCompleted)
-		m.messages = append(m.messages, resultMsg)
-		m.viewport.SetContent(m.formatAllMessages())
-		m.viewport.GotoBottom()
-
-		results = append(results, result)
+		
+		// Set a flag to indicate tool processing is happening
+		m.processingTool = true
+		
+		// Create a unique context for each tool call
+		callCtx, callCancel := context.WithTimeout(context.Background(), 60*time.Second) // 60 second timeout
+		
+		// Start a goroutine to execute the tool asynchronously
+		go func(call ToolCall, ctx context.Context, cancel context.CancelFunc) {
+			// Create the response structure
+			result := ToolResponse{
+				Id:   call.ID,
+				Name: call.Name,
+			}
+			
+			// Check if the tool exists and is available
+			registeredTool, exists := m.toolManager.RegisteredTools[call.Name]
+			if !exists || !registeredTool.IsAvailable {
+				result.Response = mkErrorResponseStruct(fmt.Errorf("tool '%s' not found or not available", call.Name))
+				m.uiUpdateChan <- toolCallResultMsg{
+					results: []ToolResponse{result},
+					call:    call,
+				}
+				cancel()
+				return
+			}
+			
+			// Execute the tool handler
+			response, err := registeredTool.Handler(call.Arguments)
+			
+			// Check if context was canceled
+			if ctx.Err() != nil {
+				result.Response = mkErrorResponseStruct(fmt.Errorf("tool call canceled: %v", ctx.Err()))
+				m.uiUpdateChan <- toolCallResultMsg{
+					results: []ToolResponse{result},
+					call:    call,
+				}
+				cancel()
+				return
+			}
+			
+			// Create the response map
+			resp := map[string]any{
+				"result": response,
+			}
+			if err != nil {
+				resp["error"] = err.Error()
+			}
+			result.Response, _ = structpb.NewStruct(resp)
+			
+			// Send the result through the channel
+			m.uiUpdateChan <- toolCallResultMsg{
+				results: []ToolResponse{result},
+				call:    call,
+			}
+			
+			// Clean up
+			cancel()
+		}(call, callCtx, callCancel)
 	}
-
-	return results, nil
+	
+	// Return empty results - actual results will come asynchronously via messages
+	return nil, nil
 }
 
 // formatToolCall creates a formatted string for displaying a tool call in the UI.

@@ -296,7 +296,7 @@ func main() {
 		// Use options that help with input focus and program behavior
 		p := tea.NewProgram(
 			model,
-			tea.WithAltScreen(),
+			//tea.WithAltScreen(),
 			tea.WithMouseCellMotion(), // Better mouse support
 		)
 

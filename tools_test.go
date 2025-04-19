@@ -208,3 +208,56 @@ func TestCreateHandlerForFileDefinition(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateHandlerForFileDefinitionFixed(t *testing.T) {
+	tests := []struct {
+		name          string
+		def           FileToolDefinition
+		expectSuccess bool
+	}{
+		{
+			name: "custom handler with command",
+			def: FileToolDefinition{
+				Name:        "custom_tool",
+				Description: "Custom tool",
+				Parameters:  json.RawMessage(`{"type": "object"}`),
+				Handler:     "custom",
+				Command:     "echo 'test'", // Command defined in the tool definition
+			},
+			expectSuccess: true,
+		},
+		{
+			name: "custom handler without command should fail",
+			def: FileToolDefinition{
+				Name:        "invalid_custom",
+				Description: "Invalid custom tool",
+				Parameters:  json.RawMessage(`{"type": "object"}`),
+				Handler:     "custom",
+				Command:     "", // Empty command
+			},
+			expectSuccess: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, err := createHandlerForFileDefinitionFixed(tt.def)
+
+			if tt.expectSuccess {
+				if err != nil {
+					t.Errorf("Expected success, got error: %v", err)
+				}
+				if handler == nil {
+					t.Error("Expected non-nil handler, got nil")
+				}
+			} else {
+				if err == nil {
+					t.Error("Expected error, got nil")
+				}
+				if handler != nil {
+					t.Error("Expected nil handler, got non-nil")
+				}
+			}
+		})
+	}
+}

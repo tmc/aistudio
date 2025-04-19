@@ -76,11 +76,13 @@ type Message struct {
 	IsPlaying bool       // Whether the audio is currently playing
 	IsPlayed  bool       // Whether the audio has been played
 
-	IsToolCall bool      // Whether this message is a tool call
-	ToolCall   *ToolCall // The tool call associated with this message (if any)
+	IsToolCall bool           // Whether this message is a tool call request from the model
+	ToolCall   *ToolCall      // The tool call details (if IsToolCall is true)
+	ToolCallID string         // ID linking a result back to its call
+	ToolStatus ToolCallStatus // Status of the tool call (e.g., PENDING, APPROVED, REJECTED)
 
-	IsToolResult bool          // Whether this message is a tool result
-	ToolResponse *ToolResponse // The tool result associated with this message (if any)
+	IsToolResponse bool          // Whether this message is a tool response
+	ToolResponse   *ToolResponse // The tool result associated with this message (if any)
 
 	IsExecutableCode       bool                  // Whether this message contains executable code
 	ExecutableCode         *ExecutableCode       // The executable code associated with this message (if any)
@@ -98,12 +100,17 @@ type Message struct {
 	FunctionCall *generativelanguagepb.FunctionCall // Function call associated with this message
 
 	// Token usage tracking
+	TokenCounts *TokenCounts // Token counts for this message
+
+	HasTokenInfo bool // Whether token count information is available for this message
+
+	Timestamp time.Time // When the message was sent
+}
+
+type TokenCounts struct {
 	PromptTokenCount   int32 // Number of tokens in the prompt
 	ResponseTokenCount int32 // Number of tokens in the response
 	TotalTokenCount    int32 // Total tokens used (prompt + response)
-	HasTokenInfo       bool  // Whether token count information is available for this message
-
-	Timestamp time.Time // When the message was sent
 }
 
 // Component is the interface that all UI components should implement
@@ -145,17 +152,13 @@ type Model struct {
 	stream     generativelanguagepb.GenerativeService_StreamGenerateContentClient
 	bidiStream generativelanguagepb.GenerativeService_BidiGenerateContentClient
 
-	streamReady bool
-	useBidi     bool      // Whether to use BidiGenerateContent (true) or StreamGenerateContent (false)
-	messages    []Message // Stores structured chat messages for display
-	err         error
-	width       int
-	height      int
-	sending     bool
-	receiving   bool
-	quitting    bool
+	currentState AppState // Current state of the application
 
-	currentState AppState
+	useBidi  bool      // Whether to use BidiGenerateContent (true) or StreamGenerateContent (false)
+	messages []Message // Stores structured chat messages for display
+	err      error     // Stores the last error encountered
+	width    int
+	height   int
 
 	// Stream management
 	streamCtx            context.Context
@@ -290,7 +293,7 @@ func (m *Model) ProcessGenerativeLanguageResponse(output api.StreamOutput) {
 		m.messages = append(m.messages, funcCallMsg)
 
 		// Update the viewport content
-		m.viewport.SetContent(m.formatAllMessages())
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 	}
 
@@ -305,7 +308,7 @@ func (m *Model) ProcessGenerativeLanguageResponse(output api.StreamOutput) {
 		m.messages[idx].GroundingMetadata = m.convertGroundingMetadata(output.GroundingMetadata)
 
 		// Update the viewport content
-		m.viewport.SetContent(m.formatAllMessages())
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 	}
 
@@ -324,7 +327,7 @@ func (m *Model) ProcessGenerativeLanguageResponse(output api.StreamOutput) {
 		}
 
 		// Update the viewport content
-		m.viewport.SetContent(m.formatAllMessages())
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 	}
 
@@ -335,14 +338,16 @@ func (m *Model) ProcessGenerativeLanguageResponse(output api.StreamOutput) {
 		log.Printf("Adding token counts to message %d: Prompt=%d, Response=%d, Total=%d",
 			idx, output.PromptTokenCount, output.CandidateTokenCount, output.TotalTokenCount)
 
-		m.messages[idx].PromptTokenCount = output.PromptTokenCount
-		m.messages[idx].ResponseTokenCount = output.CandidateTokenCount
-		m.messages[idx].TotalTokenCount = output.TotalTokenCount
+		m.messages[idx].TokenCounts = &TokenCounts{
+			PromptTokenCount:   output.PromptTokenCount,
+			ResponseTokenCount: output.CandidateTokenCount,
+			TotalTokenCount:    output.TotalTokenCount,
+		}
 		m.messages[idx].HasTokenInfo = true
 
 		// Update the viewport content if token display is enabled
 		if m.displayTokenCounts {
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
 	}
