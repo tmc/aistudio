@@ -14,7 +14,7 @@ import (
 // InitBidiStreamTest is a test-specific implementation that returns a StreamGenerateContent client
 // for test compatibility, while the actual implementation would use BidiGenerateContent.
 func (c *Client) InitBidiStreamTest(ctx context.Context, config ClientConfig) (generativelanguagepb.GenerativeService_StreamGenerateContentClient, error) {
-	if c.GenAI == nil {
+	if c.GenerativeClient == nil {
 		log.Println("InitBidiStreamTest: Client not initialized, attempting InitClient...")
 		if err := c.InitClient(ctx); err != nil {
 			return nil, err
@@ -50,7 +50,7 @@ func (c *Client) InitBidiStreamTest(ctx context.Context, config ClientConfig) (g
 	log.Printf("Sending StreamGenerateContent request: %s", prototext.Format(request))
 
 	// Start streaming content for tests
-	stream, err := c.GenAI.StreamGenerateContent(ctx, request)
+	stream, err := c.GenerativeClient.StreamGenerateContent(ctx, request)
 	if err != nil {
 		return nil, err
 	}

@@ -59,7 +59,7 @@ func sendMessageToStream(ctx context.Context, client *Client, config ClientConfi
 	}
 
 	// Start streaming content
-	stream, err := client.GenAI.StreamGenerateContent(ctx, request)
+	stream, err := client.GenerativeClient.StreamGenerateContent(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send message to stream: %w", err)
 	}
@@ -173,7 +173,7 @@ func TestE2EClientStreaming(t *testing.T) {
 	// Continue with the real API test
 	defer func() {
 		// Make sure to close the client connection
-		if client != nil && client.GenAI != nil {
+		if client != nil && client.GenerativeClient != nil {
 			client.Close()
 		}
 	}()

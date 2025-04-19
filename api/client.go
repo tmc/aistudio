@@ -22,9 +22,9 @@ import (
 
 // Client wraps the Google Generative Language client.
 type Client struct {
-	APIKey        string // Optional API Key
-	GenAI         *language.GenerativeClient
-	httpTransport http.RoundTripper // Custom HTTP transport for testing
+	APIKey           string // Optional API Key
+	GenerativeClient *language.GenerativeClient
+	httpTransport    http.RoundTripper // Custom HTTP transport for testing
 }
 
 // SetHTTPTransport sets a custom HTTP transport for testing purposes.
@@ -36,8 +36,8 @@ func (c *Client) SetHTTPTransport(transport http.RoundTripper) {
 // ToolDefinition represents a tool definition in a JSON file
 type ToolDefinition = generativelanguagepb.FunctionDeclaration
 
-// ToolResult
-type ToolResult = generativelanguagepb.FunctionResponse
+// ToolResponse
+type ToolResponse = generativelanguagepb.FunctionResponse
 
 // RegisteredTool represents a tool registered with the application that can be called
 type RegisteredTool struct {
@@ -80,6 +80,8 @@ type StreamOutput struct {
 	ExecutableCode      *generativelanguagepb.ExecutableCode      // Executable code data
 	CodeExecutionResult *generativelanguagepb.CodeExecutionResult // Executable code result data
 
+	SetupComplete *bool
+
 	// Additional feedback and metadata
 	SafetyRatings     []*generativelanguagepb.SafetyRating    // Safety ratings for content
 	GroundingMetadata *generativelanguagepb.GroundingMetadata // Grounding metadata
@@ -88,7 +90,7 @@ type StreamOutput struct {
 	PromptTokenCount    int32 // Number of tokens in the prompt (only available at end of response)
 	CandidateTokenCount int32 // Number of tokens in the response (only available at end of response)
 	TotalTokenCount     int32 // Total tokens used (prompt + response, only available at end of response)
-	IsFinalChunk        bool  // Whether this is the final chunk in the response
+	TurnComplete        bool  // Whether this is the final chunk in the response
 }
 
 // InitClient initializes the underlying Google Cloud Generative Language client.
@@ -97,7 +99,7 @@ func (c *Client) InitClient(ctx context.Context) error {
 		return fmt.Errorf("context cannot be nil")
 	}
 
-	if c.GenAI != nil {
+	if c.GenerativeClient != nil {
 		return nil
 	} // Prevent re-initialization
 
@@ -143,7 +145,7 @@ func (c *Client) InitClient(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create generative client: %w", err)
 	}
-	c.GenAI = client
+	c.GenerativeClient = client
 	log.Println("GenerativeClient initialized successfully.")
 	return nil
 }
@@ -151,7 +153,7 @@ func (c *Client) InitClient(ctx context.Context) error {
 // InitWithGRPCConn initializes the client using a pre-configured gRPC connection.
 // This is primarily for testing with the rpcreplay package.
 func (c *Client) InitWithGRPCConn(ctx context.Context, conn *grpc.ClientConn) error {
-	if c.GenAI != nil {
+	if c.GenerativeClient != nil {
 		return nil
 	} // Prevent re-initialization
 
@@ -162,17 +164,17 @@ func (c *Client) InitWithGRPCConn(ctx context.Context, conn *grpc.ClientConn) er
 		return fmt.Errorf("failed to create generative client with gRPC connection: %w", err)
 	}
 
-	c.GenAI = client
+	c.GenerativeClient = client
 	log.Println("GenerativeClient initialized successfully with gRPC connection.")
 	return nil
 }
 
 // Close closes the underlying client connection.
 func (c *Client) Close() error {
-	if c.GenAI != nil {
+	if c.GenerativeClient != nil {
 		log.Println("Closing GenerativeClient connection.")
-		err := c.GenAI.Close()
-		c.GenAI = nil
+		err := c.GenerativeClient.Close()
+		c.GenerativeClient = nil
 		return err
 	}
 	return nil
@@ -182,7 +184,7 @@ func (c *Client) Close() error {
 // This is a one-way streaming method and not true bidirectional streaming.
 func (c *Client) InitStreamGenerateContent(ctx context.Context, config ClientConfig) (generativelanguagepb.GenerativeService_StreamGenerateContentClient, error) {
 	return nil, fmt.Errorf("only bidi streaming is supported at the moment")
-	if c.GenAI == nil {
+	if c.GenerativeClient == nil {
 		log.Println("InitStreamGenerateContent: Client not initialized, attempting InitClient...")
 		if err := c.InitClient(ctx); err != nil {
 			return nil, err
@@ -222,7 +224,7 @@ func (c *Client) InitStreamGenerateContent(ctx context.Context, config ClientCon
 	log.Printf("Sending Content Request: %s", prototext.Format(request))
 
 	// Start streaming content
-	stream, err := c.GenAI.StreamGenerateContent(ctx, request)
+	stream, err := c.GenerativeClient.StreamGenerateContent(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start stream: %w", err)
 	}
@@ -237,7 +239,7 @@ func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (gener
 		return nil, fmt.Errorf("context cannot be nil")
 	}
 
-	if c.GenAI == nil {
+	if c.GenerativeClient == nil {
 		log.Println("InitBidiStream: Client not initialized, attempting InitClient...")
 		if err := c.InitClient(ctx); err != nil {
 			return nil, err
@@ -247,7 +249,7 @@ func (c *Client) InitBidiStream(ctx context.Context, config ClientConfig) (gener
 	log.Printf("Starting BidiGenerateContent for model: %s", config.ModelName)
 
 	// Start bidirectional streaming content
-	stream, err := c.GenAI.BidiGenerateContent(ctx)
+	stream, err := c.GenerativeClient.BidiGenerateContent(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start bidirectional stream: %w", err)
 	}
@@ -568,13 +570,13 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 	if resp.GetServerContent() != nil {
 		// Check if this is the final chunk based on turn completion
 		if resp.GetServerContent().GetTurnComplete() {
-			output.IsFinalChunk = true
+			output.TurnComplete = true
 			log.Printf("Final response chunk detected")
 		}
 
 		// We don't have direct access to token counts in this API version,
 		// but we can estimate based on text length as a fallback
-		if output.IsFinalChunk && output.Text != "" {
+		if output.TurnComplete && output.Text != "" {
 			// Very rough estimate: ~4 chars per token on average
 			estimatedTokens := len(output.Text) / 4
 			output.CandidateTokenCount = int32(estimatedTokens)
@@ -583,7 +585,7 @@ func ExtractBidiOutput(resp *generativelanguagepb.BidiGenerateContentServerMessa
 			log.Printf("Estimated token usage (rough): Response≈%d", estimatedTokens)
 		}
 	}
-	if output.Text == "" && len(output.Audio) == 0 && output.FunctionCall == nil && output.ExecutableCode == nil && output.CodeExecutionResult == nil {
+	if output.Text == "" && len(output.Audio) == 0 && output.FunctionCall == nil && output.ExecutableCode == nil && output.CodeExecutionResult == nil && output.TurnComplete == false {
 		log.Printf("Received response chunk contained no processable ouput: %s", prototext.Format(resp))
 	}
 	return output
@@ -640,7 +642,7 @@ func ExtractOutput(resp *generativelanguagepb.GenerateContentResponse) StreamOut
 		}
 	}
 
-	if output.Text == "" && len(output.Audio) == 0 && output.FunctionCall == nil && output.ExecutableCode == nil && output.CodeExecutionResult == nil {
+	if output.Text == "" && len(output.Audio) == 0 && output.FunctionCall == nil && output.ExecutableCode == nil && output.CodeExecutionResult == nil && output.TurnComplete == false {
 
 		log.Printf("Received response chunk contained no processable output: %s", prototext.Format(resp))
 	}
@@ -737,10 +739,10 @@ func (e *ClientError) IsRetryable() bool {
 
 // RetryableError represents an error that can be retried.
 type RetryableError struct {
-	Err     error  // The underlying error
-	Retries int    // Number of retries attempted
-	MaxRetries int // Maximum number of retries allowed
-	Backoff time.Duration // Backoff duration for the next retry
+	Err        error         // The underlying error
+	Retries    int           // Number of retries attempted
+	MaxRetries int           // Maximum number of retries allowed
+	Backoff    time.Duration // Backoff duration for the next retry
 }
 
 func (e *RetryableError) Error() string {

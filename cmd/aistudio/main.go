@@ -266,17 +266,17 @@ func main() {
 
 	// --- Initialize Component ---
 	component := aistudio.New(opts...)
-	
+
 	// Handle stdin mode if flag is set
 	if *stdinModeFlag {
 		// In stdin mode, audio is disabled
 		*audioFlag = false
-		
+
 		// Setup minimal logging for stdin mode
 		if logFile != nil {
 			log.Println("Running in stdin mode")
 		}
-		
+
 		// Process messages from stdin
 		if err := component.ProcessStdinMode(nil); err != nil {
 			log.Printf("Error in stdin mode: %v", err)
@@ -297,7 +297,7 @@ func main() {
 		p := tea.NewProgram(
 			model,
 			tea.WithAltScreen(),
-			//tea.WithMouseCellMotion(), // Better mouse support
+			tea.WithMouseCellMotion(), // Better mouse support
 		)
 
 		log.Println("Starting Bubble Tea program...")
