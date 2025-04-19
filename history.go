@@ -148,7 +148,14 @@ func (hm *HistoryManager) AddMessage(message Message) {
 		hm.NewSession("Untitled Chat", "")
 	}
 
-	hm.CurrentSession.Messages = append(hm.CurrentSession.Messages, message)
+	// Ensure we're creating a deep copy to avoid reference issues
+	messageCopy := message
+
+	// Zero out runtime-specific flags that shouldn't be persisted
+	messageCopy.IsPlaying = false
+
+	// Append the message to the current session
+	hm.CurrentSession.Messages = append(hm.CurrentSession.Messages, messageCopy)
 	hm.CurrentSession.UpdatedAt = time.Now()
 }
 
@@ -175,9 +182,44 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 			return historySaveFailedMsg{err: fmt.Errorf("no active session to save")}
 		}
 
-		// Update the session with current messages
-		m.historyManager.CurrentSession.Messages = m.messages
+		// Make a clean copy of the messages for persistence
+		persistedMessages := make([]Message, len(m.messages))
+		for i, msg := range m.messages {
+			// Create a deep copy of each message
+			msgCopy := msg
+
+			// Reset runtime state flags that shouldn't be persisted
+			msgCopy.IsPlaying = false
+			msgCopy.IsPlayed = msg.IsPlayed // We want to keep this flag for UI purposes
+
+			// Make deep copies of pointer fields to avoid reference issues
+			if msg.ToolCall != nil {
+				toolCallCopy := *msg.ToolCall
+				msgCopy.ToolCall = &toolCallCopy
+			}
+			if msg.ToolResponse != nil {
+				toolResponseCopy := *msg.ToolResponse
+				msgCopy.ToolResponse = &toolResponseCopy
+			}
+			if msg.ExecutableCode != nil {
+				execCodeCopy := *msg.ExecutableCode
+				msgCopy.ExecutableCode = &execCodeCopy
+			}
+
+			// Audio data is large, so we store only a small hint if it exists
+			if len(msg.AudioData) > 1024 && msgCopy.HasAudio {
+				// Store just a hint that there was audio (first 1K)
+				msgCopy.AudioData = msg.AudioData[:1024]
+			}
+
+			// Add the message to the persist array
+			persistedMessages[i] = msgCopy
+		}
+
+		// Update the session with processed messages
+		m.historyManager.CurrentSession.Messages = persistedMessages
 		m.historyManager.CurrentSession.UpdatedAt = time.Now()
+		m.historyManager.CurrentSession.ModelName = m.modelName
 
 		// Save the session
 		err := m.historyManager.SaveSession(m.historyManager.CurrentSession)
@@ -185,16 +227,49 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 			return historySaveFailedMsg{err: err}
 		}
 
+		log.Printf("Saved %d messages to session %s", len(persistedMessages), m.historyManager.CurrentSession.ID)
 		return historySavedMsg{}
 	}
 }
 
 // loadMessagesFromSession loads messages from a session into the model
 func (m *Model) loadMessagesFromSession(session *ChatSession) {
-	m.messages = session.Messages
+	// Create a copy of the messages to avoid modifying the original session
+	m.messages = make([]Message, len(session.Messages))
+	for i, msg := range session.Messages {
+		// Create a deep copy of each message
+		messageCopy := msg
+
+		// Ensure pointers to complex types are also copied properly
+		if msg.ToolCall != nil {
+			toolCallCopy := *msg.ToolCall
+			messageCopy.ToolCall = &toolCallCopy
+		}
+		if msg.ToolResponse != nil {
+			toolResponseCopy := *msg.ToolResponse
+			messageCopy.ToolResponse = &toolResponseCopy
+		}
+		if msg.ExecutableCode != nil {
+			execCodeCopy := *msg.ExecutableCode
+			messageCopy.ExecutableCode = &execCodeCopy
+		}
+
+		// Add the copied message to the model
+		m.messages[i] = messageCopy
+	}
+
+	// Update model configuration if needed
 	if session.ModelName != "" && session.ModelName != m.modelName {
 		m.modelName = session.ModelName
 	}
-	m.viewport.SetContent(m.formatAllMessages())
-	m.viewport.GotoBottom()
+
+	// Update the viewport content
+	formattedContent := m.renderAllMessages()
+	m.viewport.SetContent(formattedContent)
+
+	// Reset viewport position to allow scrolling from the beginning
+	m.viewport.GotoTop()
+
+	// Log the number of loaded messages
+	log.Printf("Loaded %d messages from session %s", len(m.messages), session.ID)
 }

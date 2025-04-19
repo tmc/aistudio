@@ -101,7 +101,7 @@ func (m *Model) startFIFOAudioProcessor() {
 			uiChan <- audioQueueUpdatedMsg{}
 
 			// --- Send Playback Start Message ---
-			if m.showAudioStatus && !m.quitting {
+			if m.showAudioStatus && m.currentState != AppStateQuitting {
 				uiChan <- audioPlaybackStartedMsg{chunk: chunk}
 			}
 
@@ -233,7 +233,7 @@ func (m *Model) startDirectAudioProcessor() {
 			m.audioQueue = append(m.audioQueue, chunk)
 			uiChan <- audioQueueUpdatedMsg{}
 
-			if m.showAudioStatus && !m.quitting {
+			if m.showAudioStatus && m.currentState != AppStateQuitting {
 				uiChan <- audioPlaybackStartedMsg{chunk: chunk}
 			}
 

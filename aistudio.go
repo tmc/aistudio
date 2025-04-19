@@ -23,6 +23,7 @@ import (
 	"github.com/tmc/aistudio/audioplayer"
 	"github.com/tmc/aistudio/internal/helpers"
 	"github.com/tmc/aistudio/settings"
+	"golang.org/x/term"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -54,8 +55,24 @@ func New(opts ...Option) *Model {
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 
-	vp := viewport.New(50, 5)
+	// Create a viewport that fills most of the screen
+	width, height, _ := term.GetSize(0)
+	if width < 20 {
+		width = 80 // Default if we can't get terminal size
+	}
+	if height < 10 {
+		height = 24 // Default if we can't get terminal size
+	}
+
+	viewportHeight := height - 10 // Reserve space for input, status, etc.
+	if viewportHeight < 5 {
+		viewportHeight = 5 // Minimum viewport height
+	}
+
+	vp := viewport.New(width, viewportHeight)
 	vp.SetContent("Initializing...")
+	vp.KeyMap.PageDown.SetEnabled(true)
+	vp.KeyMap.PageUp.SetEnabled(true)
 
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -285,6 +302,30 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// UpdateHistory adds a message to history and saves if history is enabled
+func (m *Model) UpdateHistory(message Message) {
+	if !m.historyEnabled || m.historyManager == nil {
+		return
+	}
+
+	m.historyManager.AddMessage(message)
+
+	// Queue a save but don't wait for it
+	go func() {
+		if m.historyManager != nil && m.historyManager.CurrentSession != nil {
+			log.Printf("Auto-saving session %s after adding message from %s",
+				m.historyManager.CurrentSession.ID, message.Sender)
+
+			// Create a tea.Msg for the UI to handle asynchronously
+			if m.uiUpdateChan != nil {
+				m.uiUpdateChan <- func() tea.Msg {
+					return m.saveSessionCmd()()
+				}
+			}
+		}
+	}()
+}
+
 // ProcessStdinMode processes messages from stdin without running the TUI
 // This is useful for scripting or non-interactive usage
 func (m *Model) ProcessStdinMode(ctx context.Context) error {
@@ -356,6 +397,15 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 			continue
 		}
 
+		// Create a user message
+		userMsg := formatMessage("You", message)
+		m.messages = append(m.messages, userMsg)
+
+		// Add to history if enabled
+		if m.historyEnabled && m.historyManager != nil {
+			m.historyManager.AddMessage(userMsg)
+		}
+
 		// Send message to stream
 		if err := m.client.SendMessageToBidiStream(m.bidiStream, message); err != nil {
 			return fmt.Errorf("failed to send message: %w", err)
@@ -405,6 +455,20 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 			if output.TurnComplete {
 				log.Println("Turn complete, exiting loop.")
 				break
+			}
+		}
+
+		// Create a model response message
+		modelMsg := formatMessage("Gemini", responseText.String())
+		m.messages = append(m.messages, modelMsg)
+
+		// Add to history if enabled
+		if m.historyEnabled && m.historyManager != nil {
+			m.historyManager.AddMessage(modelMsg)
+
+			// Save the history
+			if err := m.historyManager.SaveSession(m.historyManager.CurrentSession); err != nil {
+				log.Printf("Error saving history: %v", err)
 			}
 		}
 
@@ -549,7 +613,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Update UI
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 			return m, tea.Batch(cmds...)
 		}
@@ -596,10 +660,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Update UI
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 			// Update UI
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 			// Transition state after processing
 			// if m.approvalIndex >= len(m.pendingToolCalls) {
@@ -665,12 +729,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// Display available tools
 			m.messages = append(m.messages, formatMessage("System", toolsList))
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		} else {
 			// Display a message about tools being disabled
 			m.messages = append(m.messages, formatMessage("System", "Tool calling is disabled. Enable with --tools flag."))
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
 		return m, tea.Batch(cmds...) // Return early
@@ -714,12 +778,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// Display a message about history saving
 			m.messages = append(m.messages, formatMessage("System", "Chat history saved."))
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		} else {
 			// Display a message about history being disabled
 			m.messages = append(m.messages, formatMessage("System", "Chat history is disabled. Enable with --history flag."))
-			m.viewport.SetContent(m.formatAllMessages())
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
 		return m, tea.Batch(cmds...)
@@ -755,7 +819,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 	log.Printf("Send ignored: %v", err)
 		// 	// Optionally show a less intrusive message or just log it
 		// 	// m.messages = append(m.messages, formatError(err)) // helpers.go
-		//  // m.viewport.SetContent(m.formatAllMessages())
+		//  // m.viewport.SetContent(m.renderAllMessages())
 		// 	// m.viewport.GotoBottom()
 		// 	m.err = err // Keep error state
 		// }
@@ -807,7 +871,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.messages = append(m.messages, formatMessage("System", "Connecting to Gemini..."))
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.initStreamCmd()) // Start connection attempt
 
@@ -820,7 +884,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.messages = append(m.messages, formatMessage("System", "Connected. You can start chatting."))
 		m.messages = append(m.messages, formatMessage("Info", fmt.Sprintf("%v tools available.", len(m.toolManager.RegisteredToolDefs))))
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 		// Reset retry state on successful connection
 		m.streamRetryAttempt = 0
@@ -837,7 +901,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = m.messages[:len(m.messages)-1] // Remove "Connecting..." message
 		}
 		m.messages = append(m.messages, formatMessage("System", "Connected with bidirectional stream. You can start chatting."))
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 		// Reset retry state on successful connection
 		m.streamRetryAttempt = 0
@@ -928,7 +992,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.saveSessionCmd()) // Auto-save periodically
 			}
 
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
 		if msg.output.SetupComplete != nil {
@@ -983,7 +1047,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Update content if it's different
 					if m.messages[lastIdx].Content != msg.output.Text {
 						m.messages[lastIdx].Content = msg.output.Text
-						// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+						m.viewport.SetContent(m.renderAllMessages())
 						m.viewport.GotoBottom()
 					}
 				}
@@ -993,7 +1057,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if needToCreate {
 				log.Printf("Creating new message for text: %s", msg.output.Text)
 				m.messages = append(m.messages, newMessage)
-				// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+				m.viewport.SetContent(m.renderAllMessages())
 				m.viewport.GotoBottom()
 
 				// Save to history if enabled
@@ -1044,7 +1108,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.approvalIndex = 0 // Start with the first pending call
 					log.Printf("Waiting for user approval for %d tool call(s)", len(m.pendingToolCalls))
 					// Update UI to show modal
-					// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI // Refresh to potentially show modal
+					m.viewport.SetContent(m.renderAllMessages())
 					m.viewport.GotoBottom()
 				} else {
 					// Auto-approve and process
@@ -1055,7 +1119,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					for _, tc := range toolCalls {
 						m.messages = append(m.messages, formatToolCallMessage(tc, "Executing...")) // Use helper
 					}
-					// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI // Update UI to show "Executing"
+					m.viewport.SetContent(m.renderAllMessages())
 					m.viewport.GotoBottom()
 
 					// Process the tool calls (this might need to become a command)
@@ -1094,7 +1158,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, execCodeMessage)
 			// Potentially transition state if execution is required?
 			// m.currentState = AppStateExecutingCode ?
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 			log.Printf("Added executable code message for language: %s", msg.output.ExecutableCode.GetLanguage())
 		}
@@ -1105,7 +1169,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, execResultMessage)
 			// Transition state back if needed
 			// m.currentState = AppStateChatting ?
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
 
@@ -1116,7 +1180,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Create and append an executable code message
 			execCodeMessage := formatExecutableCodeMessage(msg.output.ExecutableCode)
 			m.messages = append(m.messages, execCodeMessage)
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 			log.Printf("Added executable code message for language: %s", msg.output.ExecutableCode.GetLanguage())
 		}
@@ -1126,7 +1190,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Create and append an executable code result message
 			execResultMessage := formatExecutableCodeResultMessage(msg.output.CodeExecutionResult)
 			m.messages = append(m.messages, execResultMessage)
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
 
@@ -1228,7 +1292,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+				m.viewport.SetContent(m.renderAllMessages())
 				m.viewport.GotoBottom()
 			}
 		}
@@ -1283,7 +1347,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentState = AppStateReady // Allow user to retry or type something else
 		m.err = fmt.Errorf("send error: %w", msg.err)
 		m.messages = append(m.messages, formatError(m.err))
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 
 	case streamErrorMsg: // stream.go
@@ -1303,7 +1367,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentState = AppStateError
 			m.err = fmt.Errorf("stream failed after %d retries: %w", maxStreamRetries, msg.err)
 			m.messages = append(m.messages, formatError(m.err))
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 			// Reset retry state for potential future manual attempts? Or require restart?
 			// m.streamRetryAttempt = 0
@@ -1319,7 +1383,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			log.Printf("Stream error: Attempt %d/%d failed. Retrying in %v. Error: %v", m.streamRetryAttempt, maxStreamRetries, delay, msg.err)
 			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Connection error. Retrying in %v (attempt %d/%d)...", delay.Round(time.Second), m.streamRetryAttempt, maxStreamRetries)))
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 
 			// Update backoff for the *next* attempt
@@ -1382,7 +1446,7 @@ func (m *Model) handleAudioMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			log.Printf("[UI Warning] audioPlaybackStartedMsg: Invalid message index %d", idx)
 		}
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI // Update UI
+		m.viewport.SetContent(m.renderAllMessages())
 
 		// Make sure textarea maintains focus when audio starts playing
 		if m.focusedComponent == "input" {
@@ -1420,7 +1484,7 @@ func (m *Model) handleAudioMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentAudio != nil && bytes.Equal(m.currentAudio.Data, msg.chunk.Data) {
 			m.currentAudio = nil
 		}
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI // Update UI
+		m.viewport.SetContent(m.renderAllMessages())
 
 		// Ensure textarea has focus after audio playback completes
 		// This is critical for keeping the input prompt visible
@@ -1435,7 +1499,7 @@ func (m *Model) handleAudioMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case audioPlaybackErrorMsg: // types.go
 		audioErr := fmt.Errorf("audio playback error: %w", msg.err)
 		m.messages = append(m.messages, formatError(audioErr))
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 		m.err = nil                 // Clear main error status line, show in history
 		m.isAudioProcessing = false // Ensure processing stops on error
@@ -1449,7 +1513,7 @@ func (m *Model) handleAudioMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case playbackTickMsg: // types.go
 		// Only update UI and continue ticking if audio is actually playing
 		if m.isAudioProcessing {
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI // Refresh view for progress bar
+			m.viewport.SetContent(m.renderAllMessages())
 
 			// Ensure textarea stays focused during playback ticks
 			if m.focusedComponent == "input" {
@@ -1482,12 +1546,61 @@ func (m *Model) handleToolMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		log.Println("Tool call results sent successfully.")
 
 	case toolCallResultMsg:
-		// Results from tool calls, might be displayed or logged
-		log.Printf("Received %d tool call results", len(msg.results))
-		// Potentially add a system message here if needed
-		// m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Processed %d tool results.", len(msg.results))))
-		// // m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
-		// m.viewport.GotoBottom()
+		// Process results from an asynchronous tool call
+		log.Printf("Received %d tool call results for tool %s", len(msg.results), msg.call.Name)
+
+		if len(msg.results) > 0 {
+			// Find the message for this tool call
+			var toolCallMsgIdx int = -1
+			for i, message := range m.messages {
+				if message.IsToolCall && message.ToolCall != nil && message.ToolCall.ID == msg.call.ID {
+					toolCallMsgIdx = i
+					break
+				}
+			}
+
+			// If we found the tool call message, update its status
+			if toolCallMsgIdx >= 0 {
+				// Update the tool call message to show completed status
+				m.messages[toolCallMsgIdx] = formatToolCallMessage(msg.call, ToolCallStatusCompleted)
+
+				// For each result, add a tool result message right after the tool call
+				for _, result := range msg.results {
+					resultMsg := formatToolResultMessage(result.Id, result.Name, result.Response, ToolCallStatusCompleted)
+					
+					// Insert the result message after the tool call message
+					if toolCallMsgIdx < len(m.messages)-1 {
+						// This shifts messages to make room for inserting the result right after the tool call
+						m.messages = append(m.messages[:toolCallMsgIdx+1], append([]Message{resultMsg}, m.messages[toolCallMsgIdx+1:]...)...)
+					} else {
+						// Just append if the tool call is the last message
+						m.messages = append(m.messages, resultMsg)
+					}
+				}
+
+				// Check if this was the last pending tool call
+				pendingToolCalls := false
+				for _, message := range m.messages {
+					if message.IsToolCall && message.ToolCall != nil &&
+						(message.ToolStatus == ToolCallStatusPending || message.ToolStatus == ToolCallStatusRunning) {
+						pendingToolCalls = true
+						break
+					}
+				}
+
+				// If no more pending tool calls, clear the processing flag
+				if !pendingToolCalls {
+					m.processingTool = false
+				}
+
+				// Update the UI
+				m.viewport.SetContent(m.renderAllMessages())
+				m.viewport.GotoBottom()
+
+				// Add the tool results to the return batch to be sent back to the model
+				cmds = append(cmds, m.sendToolResultsCmd(msg.results))
+			}
+		}
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -1501,13 +1614,13 @@ func (m *Model) handleHistoryMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.session != nil {
 			m.loadMessagesFromSession(msg.session)
 			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Loaded chat session: %s", msg.session.Title)))
-			// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
 
 	case historyLoadFailedMsg:
 		m.messages = append(m.messages, formatError(fmt.Errorf("failed to load history: %w", msg.err)))
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 
 	case historySavedMsg:
@@ -1516,7 +1629,7 @@ func (m *Model) handleHistoryMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case historySaveFailedMsg:
 		m.messages = append(m.messages, formatError(fmt.Errorf("failed to save history: %w", msg.err)))
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
+		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
 	}
 	return m, tea.Batch(cmds...)
@@ -1535,38 +1648,57 @@ func (m *Model) handleSystemMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(msg.Width, 20)
 		m.height = max(msg.Height, 10)
 
-		// FIXME: We don't need all this viewport calculation anymore since we're not rendering
-		// the full TUI with viewport. This can be simplified in the future. We keep it working
-		// for now to avoid breaking anything.
+		// Calculate viewport dimensions
+		headerHeight := lipgloss.Height(m.headerView())
+		footerHeight := lipgloss.Height(m.footerView())
 
-		headerHeight := lipgloss.Height(m.headerView()) // ui.go
-		tempM := m
-		tempM.showLogMessages = false
-		tempM.showAudioStatus = false
-		footerHeight := lipgloss.Height(tempM.footerView()) // ui.go
-		if m.showLogMessages && len(m.logMessages) > 0 {
-			footerHeight += lipgloss.Height(m.logMessagesView()) + 1 // ui.go
-		}
-		if m.showAudioStatus && (m.isAudioProcessing || len(m.audioQueue) > 0 || m.currentAudio != nil) {
-			footerHeight += lipgloss.Height(m.audioStatusView()) + 1 // ui.go
-		}
+		// Calculate viewport height to fill available space
+		viewportHeight := m.height - headerHeight - footerHeight - 2 // -2 for margins
 
-		vpHeight := m.height - headerHeight - footerHeight
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-
-		// Size viewport proportionally (not rendered but kept for backward compatibility)
+		// Update viewport dimensions
 		m.viewport.Width = m.width
-		m.viewport.Height = vpHeight
+		m.viewport.Height = viewportHeight
 
-		// Always ensure textarea is visible with proper width
+		// Set scrollable area with full content
+		m.viewport.SetContent(m.renderAllMessages())
+
+		// Update textarea width
 		m.textarea.SetWidth(m.width)
-		m.textarea.SetHeight(1) // One line is enough
 
-		// Update viewport content (not rendered but kept for backward compatibility)
-		// m.viewport.SetContent(m.formatAllMessages()) // Not needed with simplified UI
-		m.viewport.GotoBottom()
+		// Maintain scroll position when resizing
+		currPos := m.viewport.YPosition
+
+		// Additional height adjustments for optional components
+		if m.showLogMessages && len(m.logMessages) > 0 {
+			logHeight := lipgloss.Height(m.logMessagesView())
+			if viewportHeight > logHeight+5 { // Ensure minimum viewport height
+				viewportHeight -= logHeight + 1
+			}
+		}
+
+		if m.showAudioStatus && (m.isAudioProcessing || len(m.audioQueue) > 0 || m.currentAudio != nil) {
+			audioHeight := lipgloss.Height(m.audioStatusView())
+			if viewportHeight > audioHeight+5 { // Ensure minimum viewport height
+				viewportHeight -= audioHeight + 1
+			}
+		}
+
+		// Ensure viewport has minimum size
+		if viewportHeight < 10 {
+			viewportHeight = 10 // Minimum viewport height
+		}
+
+		// Update viewport with final dimensions
+		m.viewport.Height = viewportHeight
+
+		// Update content and restore scroll position
+		m.viewport.SetContent(m.renderAllMessages())
+		// Keep scroll position unless at the bottom (for better UX)
+		if m.viewport.AtBottom() || m.viewport.PastBottom() {
+			m.viewport.GotoBottom() // If we were at the bottom, stay at bottom
+		} else {
+			m.viewport.SetYOffset(currPos) // Otherwise restore position
+		}
 
 	default:
 		// Ignore unknown messages handled elsewhere or not relevant here

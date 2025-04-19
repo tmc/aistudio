@@ -1,13 +1,13 @@
 # Basic functionality test
 env GEMINI_API_KEY=test_key
 
-# Build the example
-go build -o aistudio.exe ./example
+# Build the main app from the example directory
+go build -o aistudio.exe ../../example
 exists aistudio.exe
 
-# Check version or help flag to verify basic functionality
+# Check the help flag (-h) to verify the app runs and prints usage info
 exec ./aistudio.exe -h
-stdout 'WARNING: GEMINI_API_KEY environment variable not set'
+stdout 'Usage:' # Check for usage information in help output
 
 # Clean up
 rm aistudio.exe

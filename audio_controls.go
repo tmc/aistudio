@@ -19,7 +19,7 @@ func (m *Model) PlayLastAudio() (tea.Cmd, bool) {
 				log.Printf("[UI] Triggering playback for message #%d", i)
 				cmds = append(cmds, m.playAudioCmd(m.messages[i].AudioData, m.messages[i].Content))
 				m.messages[i].IsPlaying = true // Optimistic UI update
-				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.SetContent(m.renderAllMessages())
 				playbackTriggered = true
 				break
 			}
@@ -42,7 +42,7 @@ func (m *Model) ReplayLastAudio() (tea.Cmd, bool) {
 				cmds = append(cmds, m.playAudioCmd(m.messages[i].AudioData, m.messages[i].Content))
 				m.messages[i].IsPlaying = true // Optimistic UI update
 				m.messages[i].IsPlayed = false
-				m.viewport.SetContent(m.formatAllMessages())
+				m.viewport.SetContent(m.renderAllMessages())
 				replayTriggered = true
 				break
 			}
