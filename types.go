@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
+	"cloud.google.com/go/ai/generativelanguage/apiv1beta/generativelanguagepb"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -69,6 +69,7 @@ type ExecutableCodeResult = generativelanguagepb.CodeExecutionResult
 
 // Message represents a chat message with optional audio data
 type Message struct {
+	ID        string     // Unique identifier for the message
 	Sender    senderName // Who sent the message (You, Gemini, System)
 	Content   string     // The message text
 	HasAudio  bool       // Whether the message has associated audio
@@ -76,13 +77,10 @@ type Message struct {
 	IsPlaying bool       // Whether the audio is currently playing
 	IsPlayed  bool       // Whether the audio has been played
 
-	IsToolCall bool           // Whether this message is a tool call request from the model
-	ToolCall   *ToolCall      // The tool call details (if IsToolCall is true)
-	ToolCallID string         // ID linking a result back to its call
+	ToolCall   *ToolCall      // The tool call associated with this message (if any)
 	ToolStatus ToolCallStatus // Status of the tool call (e.g., PENDING, APPROVED, REJECTED)
 
-	IsToolResponse bool          // Whether this message is a tool response
-	ToolResponse   *ToolResponse // The tool result associated with this message (if any)
+	ToolResponse *ToolResponse // The tool result associated with this message (if any)
 
 	IsExecutableCode       bool                  // Whether this message contains executable code
 	ExecutableCode         *ExecutableCode       // The executable code associated with this message (if any)
@@ -96,15 +94,20 @@ type Message struct {
 	HasGroundingMetadata bool               // Whether this message has grounding metadata
 	GroundingMetadata    *GroundingMetadata // Grounding metadata for the message
 
-	// Function call/response tracking
-	FunctionCall *generativelanguagepb.FunctionCall // Function call associated with this message
-
 	// Token usage tracking
 	TokenCounts *TokenCounts // Token counts for this message
 
 	HasTokenInfo bool // Whether token count information is available for this message
 
 	Timestamp time.Time // When the message was sent
+}
+
+func (m Message) IsToolCall() bool {
+	return m.ToolCall != nil
+}
+
+func (m Message) IsToolResponse() bool {
+	return m.ToolResponse != nil
 }
 
 type TokenCounts struct {
@@ -150,7 +153,7 @@ type Model struct {
 
 	// Stream connections - we'll use either one depending on the mode
 	stream     generativelanguagepb.GenerativeService_StreamGenerateContentClient
-	bidiStream generativelanguagepb.GenerativeService_BidiGenerateContentClient
+	bidiStream generativelanguagepb.GenerativeService_StreamGenerateContentClient
 
 	currentState AppState // Current state of the application
 
@@ -159,6 +162,7 @@ type Model struct {
 	err      error     // Stores the last error encountered
 	width    int
 	height   int
+	exitCode int // Exit code to use when quitting
 
 	// Stream management
 	streamCtx            context.Context
@@ -168,14 +172,22 @@ type Model struct {
 	streamRetryAttempt   int           // Tracks the current retry attempt number
 	currentStreamBackoff time.Duration // Tracks the current backoff duration
 	globalTimeout        time.Duration // Global timeout for the entire program
+	
+	// Auto-send configuration for testing
+	autoSendEnabled bool          // Whether auto-send is enabled
+	autoSendDelay   time.Duration // Delay before auto-sending test message
 
 	// Basic configuration
-	modelName   string
-	apiKey      string // Store API key if provided via option
-	enableAudio bool   // Config: Enable audio output?
-	voiceName   string // Config: Which voice to use?
-	playerCmd   string // Config: Command to play raw PCM audio
-	showLogo    bool   // Whether to show a logo or not
+	modelName       string
+	apiKey          string      // Store API key if provided via option
+	backend         BackendType // Which backend to use (Gemini API or Vertex AI)
+	projectID       string      // Project ID for Vertex AI
+	location        string      // Location for Vertex AI
+	enableAudio     bool        // Config: Enable audio output?
+	enableWebSocket bool        // Config: Enable WebSocket connection instead of gRPC
+	voiceName       string      // Config: Which voice to use?
+	playerCmd       string      // Config: Command to play raw PCM audio
+	showLogo        bool        // Whether to show a logo or not
 
 	// Generation parameters
 	temperature     float32 // Controls randomness (0.0-1.0)
@@ -200,12 +212,13 @@ type Model struct {
 	videoInputMode VideoInputMode
 
 	// Audio processing
-	audioChannel      chan AudioChunk   // Channel for audio processing queue
-	currentAudio      *AudioChunk       // Currently playing audio (needs careful sync)
-	audioQueue        []AudioChunk      // Queue of audio chunks waiting to be processed (UI only)
-	isAudioProcessing bool              // Whether audio is currently being processed (player active)
-	showAudioStatus   bool              // Whether to show audio status in UI
-	audioPlaybackMode AudioPlaybackMode // How to play audio (direct or per-play files)
+	audioChannel      chan AudioChunk           // Channel for audio processing queue
+	currentAudio      *AudioChunk               // Currently playing audio (needs careful sync)
+	audioQueue        []AudioChunk              // Queue of audio chunks waiting to be processed (UI only)
+	isAudioProcessing bool                      // Whether audio is currently being processed (player active)
+	showAudioStatus   bool                      // Whether to show audio status in UI
+	audioPlaybackMode AudioPlaybackMode         // How to play audio (direct or per-play files)
+	afplayPlayer      *audioplayer.AfplayPlayer // AfplayPlayer implementation for macOS
 
 	// Audio consolidation
 	consolidatedAudioData  []byte        // Buffer for consolidating multiple audio chunks
@@ -237,14 +250,16 @@ type Model struct {
 	historyEnabled bool            // Whether history is enabled
 
 	// Tool calling support
-	enableTools      bool         // Whether tool calling is enabled
-	toolManager      *ToolManager // Tool manager for handling tools
-	activeToolCall   *ToolCall    // Currently active tool call, if any
-	processingTool   bool         // Whether a tool call is being processed
-	pendingToolCalls []ToolCall   // Tool calls waiting for approval
-	showToolApproval bool         // Whether to show the tool approval modal
-	approvalIndex    int          // Current tool call being approved
-	requireApproval  bool         // Whether tool calls require approval
+	enableTools       bool                          // Whether tool calling is enabled
+	toolManager       *ToolManager                  // Tool manager for handling tools
+	activeToolCall    *ToolCall                     // Currently active tool call, if any
+	processingTool    bool                          // Whether a tool call is being processed
+	pendingToolCalls  []ToolCall                    // Tool calls waiting for approval
+	showToolApproval  bool                          // Whether to show the tool approval modal
+	approvalIndex     int                           // Current tool call being approved
+	requireApproval   bool                          // Whether tool calls require approval
+	approvedToolTypes map[string]bool               // Tool types that don't need approval anymore
+	toolCallCache     map[string]*ToolCallViewModel // Cache of tool calls by ID for UI state
 
 	// System prompt
 	systemPrompt string // System prompt to use for the conversation
@@ -274,27 +289,33 @@ type flushAudioBufferMsg struct{}
 // playbackTickMsg triggers UI refresh during playback
 type playbackTickMsg time.Time
 
+// keepaliveTickMsg triggers connection keepalive messages
+type keepaliveTickMsg time.Time
+
+// autoSendMsg triggers sending a test message automatically
+type autoSendMsg struct{}
+
 // ProcessGenerativeLanguageResponse processes a response from the GenerativeLanguage API
 // and produces display-ready data structures
 func (m *Model) ProcessGenerativeLanguageResponse(output api.StreamOutput) {
 	// If there's function call data, create a special message for it
 	if output.FunctionCall != nil {
-		log.Printf("Processing function call: %s", output.FunctionCall.Name)
+		// log.Printf("Processing function call: %s", output.FunctionCall.Name)
 
-		// Create a new message for the function call
-		funcCallMsg := Message{
-			Sender:       "System",
-			Content:      "Function Call",
-			FunctionCall: output.FunctionCall,
-			Timestamp:    time.Now(),
-		}
+		// // Create a new message for the function call
+		// funcCallMsg := Message{
+		// 	Sender:       "System",
+		// 	Content:      "Function Call",
+		// 	FunctionCall: output.FunctionCall,
+		// 	Timestamp:    time.Now(),
+		// }
 
-		// Add it to the messages
-		m.messages = append(m.messages, funcCallMsg)
+		// // Add it to the messages
+		// m.messages = append(m.messages, funcCallMsg)
 
-		// Update the viewport content
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// // Update the viewport content
+		// m.viewport.SetContent(m.renderAllMessages())
+		// m.viewport.GotoBottom()
 	}
 
 	// If there's grounding metadata, associate it with the last message

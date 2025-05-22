@@ -1,3 +1,4 @@
+// Edited with Aider on April 14, 2025
 package aistudio
 
 import (
@@ -9,11 +10,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
+	"cloud.google.com/go/ai/generativelanguage/apiv1beta/generativelanguagepb"
 	tea "github.com/charmbracelet/bubbletea"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -138,8 +139,37 @@ type toolCallSentMsg struct{}
 
 // Message for tool call results
 type toolCallResultMsg struct {
-	results []ToolResponse // Each response includes its tool call ID in the Id field
-	call    ToolCall       // The original tool call (for additional context if needed)
+	results   []ToolResponse     // Each response includes its tool call ID in the Id field
+	call      ToolCall           // The original tool call (for additional context if needed)
+	viewModel *ToolCallViewModel // The view model for UI rendering
+}
+
+// getOrCreateToolVM returns an existing ToolCallViewModel or creates a new one.
+// This centralizes the creation and update of view models to maintain consistency.
+func (m *Model) getOrCreateToolVM(id string, options ...func(*ToolCallViewModel)) *ToolCallViewModel {
+	// Create the cache if it doesn't exist
+	if m.toolCallCache == nil {
+		m.toolCallCache = make(map[string]*ToolCallViewModel)
+	}
+
+	// Check if the VM already exists
+	vm, exists := m.toolCallCache[id]
+	if !exists {
+		// Create a new view model with minimal information
+		vm = &ToolCallViewModel{
+			ID:        id,
+			Status:    ToolCallStatusPending, // Default status for new VMs
+			StartedAt: time.Now(),
+		}
+		m.toolCallCache[id] = vm
+	}
+
+	// Apply any options to update the view model
+	for _, option := range options {
+		option(vm)
+	}
+
+	return vm
 }
 
 // Helper function to convert raw JSON parameters to a proto schema.
@@ -361,6 +391,21 @@ func (tm *ToolManager) GetAvailableTools() []api.ToolDefinition {
 	return availableTools
 }
 
+// GetToolCount returns the number of registered tools
+func (tm *ToolManager) GetToolCount() int {
+	if tm == nil {
+		return 0
+	}
+
+	count := 0
+	for _, tool := range tm.RegisteredTools {
+		if tool.IsAvailable {
+			count++
+		}
+	}
+	return count
+}
+
 // processToolCalls processes tool calls from the model and returns the results
 func (m *Model) processToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 	if len(toolCalls) == 0 {
@@ -371,16 +416,45 @@ func (m *Model) processToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 		return nil, fmt.Errorf("tool manager not initialized")
 	}
 
-	// If tool approval is required, show the approval modal
+	// If tool approval is required, check if any tools need approval
 	if m.requireApproval {
-		// Store the tool calls for approval
-		m.pendingToolCalls = toolCalls
-		m.approvalIndex = 0
-		m.showToolApproval = true
+		// Filter out already approved tool types
+		var needsApproval []ToolCall
+		var autoApprovedCalls []ToolCall
 
-		// Return empty results for now - the tools will be processed
-		// when the user approves them in the UI
-		return nil, nil
+		for _, call := range toolCalls {
+			// Check if this tool type is pre-approved
+			if approved, ok := m.approvedToolTypes[call.Name]; ok && approved {
+				log.Printf("Tool call '%s' auto-approved (pre-approved type)", call.Name)
+				autoApprovedCalls = append(autoApprovedCalls, call)
+			} else {
+				needsApproval = append(needsApproval, call)
+			}
+		}
+
+		// Execute auto-approved calls immediately
+		var results []ToolResponse
+		var err error
+		if len(autoApprovedCalls) > 0 {
+			results, err = m.executeToolCalls(autoApprovedCalls)
+			if err != nil {
+				return results, err
+			}
+		}
+
+		// If there are still tools that need approval, show the modal
+		if len(needsApproval) > 0 {
+			// Store the tool calls for approval
+			m.pendingToolCalls = needsApproval
+			m.approvalIndex = 0
+			m.showToolApproval = true
+
+			// Return any results from auto-approved tools
+			return results, nil
+		} else if len(autoApprovedCalls) > 0 {
+			// All tools were auto-approved
+			return results, nil
+		}
 	}
 
 	// Process tools immediately if approval not required
@@ -394,15 +468,51 @@ func mkErrorResponseStruct(err error) *structpb.Struct {
 	return s
 }
 
+// ToolCallViewModel represents a tool call for rendering purposes
+type ToolCallViewModel struct {
+	ID        string
+	Name      string
+	Status    ToolCallStatus
+	Arguments json.RawMessage
+	Result    *structpb.Struct
+	Error     error
+	StartedAt time.Time
+}
+
+// Tool status to Unicode glyph mapping
+func toolStatusGlyph(status ToolCallStatus) string {
+	switch status {
+	case ToolCallStatusRunning:
+		// Use a more animated spinner character based on the current time
+		spinnerChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		spinnerIndex := int(time.Now().UnixNano()/100000000) % len(spinnerChars)
+		return spinnerChars[spinnerIndex]
+	case ToolCallStatusPending:
+		return "⏳"
+	case ToolCallStatusCompleted:
+		return "✓"
+	case ToolCallStatusRejected:
+		return "✗"
+	default:
+		return "?"
+	}
+}
+
+// StripANSI removes ANSI escape codes from a string
+func StripANSI(str string) string {
+	ansi := regexp.MustCompile("[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\u0007)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))")
+	return ansi.ReplaceAllString(str, "")
+}
+
 // executeToolCalls prepares tool calls and returns a command to execute them asynchronously
 func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
-	
+
 	// Keep track of which tool calls we've already added to avoid duplicates
 	toolCallIDs := make(map[string]bool)
-	
+
 	// Execute each tool call asynchronously
 	for _, call := range toolCalls {
 		// Skip if we've already added this tool call to avoid duplicates
@@ -410,48 +520,68 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 			log.Printf("Skipping duplicate tool call ID: %s", call.ID)
 			continue
 		}
-		
+
 		// Mark this tool call ID as processed
 		toolCallIDs[call.ID] = true
-		
-		// Check if this tool call already exists in the messages
-		alreadyExists := false
-		for _, msg := range m.messages {
-			if msg.IsToolCall && msg.ToolCall != nil && msg.ToolCall.ID == call.ID {
-				alreadyExists = true
+
+		// Get or create the view model for this tool call
+		toolVM := m.getOrCreateToolVM(call.ID, func(vm *ToolCallViewModel) {
+			vm.Name = call.Name
+			vm.Arguments = call.Arguments
+
+			// Only update status if it's not already running
+			if vm.Status == ToolCallStatusPending {
+				vm.Status = ToolCallStatusRunning
+			}
+		})
+
+		// Add a message with the spinner for this tool call if not already in messages
+		toolCallMsg := formatToolCallMessageFromViewModel(*toolVM)
+
+		// Update existing message or add new one
+		messageUpdated := false
+		for i, msg := range m.messages {
+			if msg.IsToolCall() && msg.ToolCall.ID == call.ID {
+				m.messages[i] = toolCallMsg
+				messageUpdated = true
 				break
 			}
 		}
-		
-		// Only add a new message if the tool call doesn't already exist
-		if !alreadyExists {
-			// Add a message with the spinner for this tool call
-			toolCallMsg := formatToolCallMessage(call, ToolCallStatusRunning)
+
+		if !messageUpdated {
 			m.messages = append(m.messages, toolCallMsg)
-			
-			// Update the UI to show the spinner for this tool call
-			m.viewport.SetContent(m.renderAllMessages())
-			m.viewport.GotoBottom()
 		}
-		
+
+		// Update UI
+		m.viewport.SetContent(m.renderAllMessages())
+		m.viewport.GotoBottom()
+
 		// Set a flag to indicate tool processing is happening
 		m.processingTool = true
-		
+
 		// Create a unique context for each tool call
 		callCtx, callCancel := context.WithTimeout(context.Background(), 60*time.Second) // 60 second timeout
-		
+
 		// Start a goroutine to execute the tool asynchronously
-		go func(call ToolCall, ctx context.Context, cancel context.CancelFunc) {
+		go func(call ToolCall, ctx context.Context, cancel context.CancelFunc, toolVM *ToolCallViewModel) {
 			// Create the response structure
 			result := ToolResponse{
 				Id:   call.ID,
 				Name: call.Name,
 			}
-			
+
 			// Check if the tool exists and is available
 			registeredTool, exists := m.toolManager.RegisteredTools[call.Name]
 			if !exists || !registeredTool.IsAvailable {
-				result.Response = mkErrorResponseStruct(fmt.Errorf("tool '%s' not found or not available", call.Name))
+				err := fmt.Errorf("tool '%s' not found or not available", call.Name)
+				result.Response = mkErrorResponseStruct(err)
+
+				// Update the view model through the helper
+				m.getOrCreateToolVM(call.ID, func(vm *ToolCallViewModel) {
+					vm.Status = ToolCallStatusCompleted
+					vm.Error = err
+				})
+
 				m.uiUpdateChan <- toolCallResultMsg{
 					results: []ToolResponse{result},
 					call:    call,
@@ -459,13 +589,21 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 				cancel()
 				return
 			}
-			
+
 			// Execute the tool handler
 			response, err := registeredTool.Handler(call.Arguments)
-			
+
 			// Check if context was canceled
 			if ctx.Err() != nil {
-				result.Response = mkErrorResponseStruct(fmt.Errorf("tool call canceled: %v", ctx.Err()))
+				err := fmt.Errorf("tool call canceled: %v", ctx.Err())
+				result.Response = mkErrorResponseStruct(err)
+
+				// Update the view model through the helper
+				m.getOrCreateToolVM(call.ID, func(vm *ToolCallViewModel) {
+					vm.Status = ToolCallStatusCompleted
+					vm.Error = err
+				})
+
 				m.uiUpdateChan <- toolCallResultMsg{
 					results: []ToolResponse{result},
 					call:    call,
@@ -473,7 +611,7 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 				cancel()
 				return
 			}
-			
+
 			// Create the response map
 			resp := map[string]any{
 				"result": response,
@@ -482,54 +620,30 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 				resp["error"] = err.Error()
 			}
 			result.Response, _ = structpb.NewStruct(resp)
-			
+
+			// Update the view model through the helper
+			updatedVM := m.getOrCreateToolVM(call.ID, func(vm *ToolCallViewModel) {
+				vm.Status = ToolCallStatusCompleted
+				vm.Result = result.Response
+				if err != nil {
+					vm.Error = err
+				}
+			})
+
 			// Send the result through the channel
 			m.uiUpdateChan <- toolCallResultMsg{
-				results: []ToolResponse{result},
-				call:    call,
+				results:   []ToolResponse{result},
+				call:      call,
+				viewModel: updatedVM,
 			}
-			
+
 			// Clean up
 			cancel()
-		}(call, callCtx, callCancel)
+		}(call, callCtx, callCancel, toolVM)
 	}
-	
+
 	// Return empty results - actual results will come asynchronously via messages
 	return nil, nil
-}
-
-// formatToolCall creates a formatted string for displaying a tool call in the UI.
-func formatToolCall(call ToolCall) string {
-	var argsBuf bytes.Buffer
-	// Pretty-print the JSON arguments for readability
-	if err := json.Indent(&argsBuf, call.Arguments, "", "  "); err != nil {
-		// Fallback to raw JSON if indentation fails
-		argsBuf.Write(call.Arguments)
-	}
-
-	return fmt.Sprintf("🔧 Calling Tool: %s\nArguments:\n```json\n%s\n```",
-		call.Name,
-		argsBuf.String(),
-	)
-}
-
-// formatToolResult creates a formatted string for displaying a tool result in the UI.
-func formatToolResult(result ToolResponse) string {
-	var resultStr string
-
-	if errVal, ok := result.Response.Fields["error"]; ok {
-		resultStr = fmt.Sprintf("❌ Error: %s", errVal.GetStringValue())
-	} else {
-		// Pretty-print the JSON response
-		responseBytes, err := json.MarshalIndent(result.Response, "", "  ")
-		if err != nil {
-			// Fallback if marshalling fails
-			resultStr = fmt.Sprintf("✅ Result: %v (failed to marshal JSON: %v)", result.Response, err)
-		} else {
-			resultStr = fmt.Sprintf("✅ Result:\n```json\n%s\n```", string(responseBytes))
-		}
-	}
-	return fmt.Sprintf("Tool Result (ID: %s)\n%s", result.Id, resultStr) // Use the correct field name 'Id'
 }
 
 // sendToolResultsCmd creates a command that sends tool results back to the model
@@ -799,175 +913,24 @@ func createHandlerForFileDefinition(def FileToolDefinition) (func(json.RawMessag
 		// This handler is defined inline for simplicity, matching RegisterDefaultTools
 		return func(args json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("system_info handler is not implemented yet")
-			var params struct {
-				IncludeTime bool `json:"include_time"`
-			}
-			if err := json.Unmarshal(args, &params); err != nil {
-				return nil, err
-			}
-
-			result := map[string]any{
-				"hostname": "localhost",
-			}
-
-			if params.IncludeTime {
-				result["current_time"] = time.Now().Format(time.RFC3339)
-			}
-
-			return result, nil
 		}, nil
 
 	case "exec_command":
 		// This handler is defined inline for simplicity, matching RegisterDefaultTools
 		return func(args json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("exec_command handler is not implemented yet")
-			var params struct {
-				Command   string   `json:"command"`
-				Args      []string `json:"args,omitempty"`
-				TimeoutMs int      `json:"timeout_ms,omitempty"`
-			}
-			if err := json.Unmarshal(args, &params); err != nil {
-				return nil, err
-			}
-
-			// If a command is specified in the definition, override the command from args
-			if def.Command != "" {
-				params.Command = def.Command
-			}
-
-			// Security check - restrict dangerous commands
-			dangerousCmds := map[string]bool{
-				"rm": true, "mv": true, "cp": true, "dd": true,
-				"mkfs": true, "reboot": true, "shutdown": true,
-				"wget": true, "curl": true, "chmod": true,
-			}
-
-			if dangerousCmds[params.Command] {
-				return nil, fmt.Errorf("command '%s' is not allowed for security reasons", params.Command)
-			}
-
-			// Verify the command exists in PATH
-			execPath, found := findExecutableInPath(params.Command)
-			if !found {
-				log.Printf("Warning: Command '%s' not found in PATH", params.Command)
-				return map[string]any{
-					"success": false,
-					"error":   fmt.Sprintf("Command '%s' not found. Make sure it's installed and in your PATH.", params.Command),
-				}, nil
-			}
-
-			// Use the full path to the executable
-			log.Printf("Using executable at: %s", execPath)
-			params.Command = execPath
-
-			// Set a default timeout if none provided
-			timeout := time.Duration(params.TimeoutMs) * time.Millisecond
-			if timeout == 0 {
-				timeout = 5 * time.Second // Default timeout
-			}
-
-			// Execute the command
-			output, err := ExecuteCommandTool(params.Command, params.Args, timeout)
-			if err != nil {
-				return map[string]any{
-					"success": false,
-					"error":   err.Error(),
-				}, nil
-			}
-
-			return map[string]any{
-				"success": true,
-				"output":  output,
-			}, nil
 		}, nil
 
 	case "file_operations":
 		// This handler provides file operations
 		return func(args json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("file_operations handler is not implemented yet")
-			var params struct {
-				Operation string `json:"operation"`
-				Path      string `json:"path"`
-				Content   string `json:"content,omitempty"`
-			}
-			if err := json.Unmarshal(args, &params); err != nil {
-				return nil, err
-			}
-
-			// Get the absolute path for security
-			absPath, err := filepath.Abs(params.Path)
-			if err != nil {
-				return nil, fmt.Errorf("invalid path: %w", err)
-			}
-
-			switch params.Operation {
-			case "read":
-				data, err := os.ReadFile(absPath)
-				if err != nil {
-					return map[string]any{
-						"success": false,
-						"error":   err.Error(),
-					}, nil
-				}
-				return map[string]any{
-					"success": true,
-					"content": string(data),
-				}, nil
-
-			case "write":
-				err := os.WriteFile(absPath, []byte(params.Content), 0644)
-				if err != nil {
-					return map[string]any{
-						"success": false,
-						"error":   err.Error(),
-					}, nil
-				}
-				return map[string]any{
-					"success": true,
-					"path":    absPath,
-				}, nil
-
-			case "exists":
-				_, err := os.Stat(absPath)
-				exists := !os.IsNotExist(err)
-				return map[string]any{
-					"exists": exists,
-					"path":   absPath,
-				}, nil
-
-			default:
-				return nil, fmt.Errorf("unknown file operation: %s", params.Operation)
-			}
 		}, nil
 
 	case "read_file":
 		// This handler is defined inline for simplicity, matching RegisterDefaultTools
 		return func(args json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("read_file handler is not implemented yet")
-			var params struct {
-				FilePath string `json:"file_path"`
-			}
-			if err := json.Unmarshal(args, &params); err != nil {
-				return nil, err
-			}
-
-			// Get the absolute path for security
-			absPath, err := filepath.Abs(params.FilePath)
-			if err != nil {
-				return nil, fmt.Errorf("invalid path: %w", err)
-			}
-
-			data, err := os.ReadFile(absPath)
-			if err != nil {
-				return map[string]any{
-					"success": false,
-					"error":   err.Error(),
-				}, nil
-			}
-			return map[string]any{
-				"success": true,
-				"content": string(data),
-			}, nil
 		}, nil
 
 	case "custom":
@@ -1107,6 +1070,88 @@ func (tm *ToolManager) RegisterDefaultTools() error {
 	)
 	if err != nil {
 		return fmt.Errorf("failed to register exec_command tool: %w", err)
+	}
+
+	// ListModels tool - list available Gemini models
+	err = tm.RegisterTool(
+		"list_models",
+		"List available Gemini models with options to filter by API version",
+		json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"filter": {
+					"type": "string",
+					"description": "Optional filter to limit returned models (e.g., 'gemini-2.0' or 'pro')"
+				},
+				"api_versions": {
+					"type": "array",
+					"description": "Specific API versions to query (alpha, beta, v1). If empty, all available versions are queried.",
+					"items": {
+						"type": "string",
+						"enum": ["alpha", "beta", "v1"]
+					}
+				},
+				"include_details": {
+					"type": "boolean",
+					"description": "Whether to include detailed model information instead of just names",
+					"default": false
+				}
+			}
+		}`),
+		func(args json.RawMessage) (any, error) {
+			var params struct {
+				Filter         string   `json:"filter"`
+				APIVersions    []string `json:"api_versions"`
+				IncludeDetails bool     `json:"include_details"`
+			}
+			if err := json.Unmarshal(args, &params); err != nil {
+				return nil, err
+			}
+
+			// Convert API versions from string to APIVersion
+			var apiVersions []api.APIVersion
+			for _, v := range params.APIVersions {
+				switch v {
+				case "alpha":
+					apiVersions = append(apiVersions, api.APIVersionAlpha)
+				case "beta":
+					apiVersions = append(apiVersions, api.APIVersionBeta)
+				case "v1":
+					apiVersions = append(apiVersions, api.APIVersionV1)
+				}
+			}
+
+			// Create a client for the API
+			client := &api.Client{
+				APIKey: os.Getenv("GEMINI_API_KEY"),
+			}
+
+			// Prepare options
+			options := api.DefaultListModelsOptions()
+			options.Filter = params.Filter
+			options.APIVersions = apiVersions
+
+			// Get models
+			models, err := client.ListModelsWithOptions(options)
+			if err != nil {
+				return map[string]any{
+					"success": false,
+					"error":   err.Error(),
+				}, nil
+			}
+
+			// Return the results
+			result := map[string]any{
+				"success": true,
+				"count":   len(models),
+				"models":  models,
+			}
+
+			return result, nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register list_models tool: %w", err)
 	}
 
 	return nil
@@ -1287,4 +1332,48 @@ func createHandlerForFileDefinitionFixed(def FileToolDefinition) (func(json.RawM
 		// Unknown handler type should fail
 		return nil, fmt.Errorf("unknown handler type: %s", def.Handler)
 	}
+}
+
+// Compatible functions to replace the removed UI functions
+
+// formatToolCallMessage creates a Message for a tool call with enhanced formatting
+func formatToolCallMessage(toolCall ToolCall, status string) Message {
+	// Create a temporary view model
+	var statusEnum ToolCallStatus
+	switch status {
+	case "Executing...":
+		statusEnum = ToolCallStatusRunning
+	case "Pending...":
+		statusEnum = ToolCallStatusPending
+	case "Completed":
+		statusEnum = ToolCallStatusCompleted
+	case "Rejected":
+		statusEnum = ToolCallStatusRejected
+	default:
+		statusEnum = ToolCallStatusUnknown
+	}
+
+	vm := ToolCallViewModel{
+		ID:        toolCall.ID,
+		Name:      toolCall.Name,
+		Status:    statusEnum,
+		Arguments: toolCall.Arguments,
+		StartedAt: time.Now(),
+	}
+
+	return formatToolCallMessageFromViewModel(vm)
+}
+
+// formatToolResultMessage creates a Message for a tool result with enhanced formatting
+func formatToolResultMessage(toolCallID, toolName string, result *structpb.Struct, status ToolCallStatus) Message {
+	// Create a temporary view model
+	vm := ToolCallViewModel{
+		ID:        toolCallID,
+		Name:      toolName,
+		Status:    status,
+		Result:    result,
+		StartedAt: time.Now(),
+	}
+
+	return formatToolResultMessageFromViewModel(vm)
 }
