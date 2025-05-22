@@ -11,12 +11,11 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"runtime/trace"
-	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tmc/aistudio" // Adjust import path if necessary
-	"github.com/tmc/aistudio/api"
 )
 
 // setupLogging directs log output to a file for easier debugging.
@@ -38,11 +37,26 @@ func setupLogging() *os.File {
 
 func main() {
 	// --- Command Line Flags ---
-	modelFlag := flag.String("model", aistudio.DefaultModel, "Gemini model ID to use.")
-	audioFlag := flag.Bool("audio", true, "Enable audio output.")
+	modelFlag := flag.String("model", aistudio.DefaultModel, "Model ID to use.")
+	audioFlag := flag.Bool("audio", false, "Enable audio output (disabled by default as some models don't support it).")
 	voiceFlag := flag.String("voice", aistudio.DefaultVoice, "Voice for audio output (e.g., Puck, Amber).")
 	playerCmdFlag := flag.String("player", "", "Override command for audio playback (e.g., 'ffplay ...'). Auto-detected if empty.")
 	apiKeyFlag := flag.String("api-key", "", "Gemini API Key (overrides GEMINI_API_KEY env var).")
+
+	// Vertex AI flags
+	vertexFlag := flag.Bool("vertex", false, "Use Vertex AI instead of Gemini API.")
+	projectIDFlag := flag.String("project-id", "", "Google Cloud project ID for Vertex AI.")
+	locationFlag := flag.String("location", "us-central1", "Location for Vertex AI.")
+
+	// Grok AI flags
+	grokFlag := flag.Bool("grok", false, "Use xAI Grok API.")
+	grokAPIKeyFlag := flag.String("grok-api-key", "", "Grok API Key (overrides GROK_API_KEY env var).")
+
+	// Gemini API version flag
+	geminiVersionFlag := flag.String("gemini-version", "v1beta", "Gemini API version to use: 'v1alpha' or 'v1beta'.")
+
+	// WebSocket mode flag
+	webSocketFlag := flag.Bool("ws", false, "Enable WebSocket mode for live models (disabled by default, uses gRPC).")
 
 	// New flags for history and tools
 	historyFlag := flag.Bool("history", true, "Enable chat history.")
@@ -53,6 +67,7 @@ func main() {
 	systemPromptFileFlag := flag.String("system-prompt-file", "", "Load system prompt from a file.")
 	listModelsFlag := flag.Bool("list-models", false, "List available models and exit.")
 	filterModelsFlag := flag.String("filter-models", "", "Filter models list (used with --list-models)")
+	apiVersionsFlag := flag.String("api-versions", "beta", "API versions to query when listing models (comma-separated): alpha,beta,v1")
 
 	// Generation parameters
 	temperatureFlag := flag.Float64("temperature", 0.7, "Temperature for text generation (0.0-1.0).")
@@ -67,7 +82,8 @@ func main() {
 	responseMimeTypeFlag := flag.String("response-mime-type", "", "Expected response MIME type (e.g., application/json).")
 	responseSchemaFileFlag := flag.String("response-schema-file", "", "Path to JSON schema file defining response structure.")
 	globalTimeoutFlag := flag.Duration("global-timeout", 0, "Global timeout for all API requests (e.g., 30s, 1m). Zero means no timeout.")
-	toolApprovalFlag := flag.Bool("tool-approval", false, "Require user approval for tool calls.")
+	autoSendFlag := flag.String("auto-send", "", "Auto-send a test message after specified delay (e.g., 3s, 5s). Useful for testing.")
+	toolApprovalFlag := flag.Bool("tool-approval", true, "Require user approval for tool calls.")
 	stdinModeFlag := flag.Bool("stdin", false, "Read messages from stdin without running TUI. Useful for scripting.")
 
 	// Profiling flags (all with pprof- prefix)
@@ -78,13 +94,19 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Interactive chat with Gemini Live Streaming API.\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Interactive chat with Gemini and Vertex AI.\n\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nEnvironment Variables:\n")
-		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY: API Key (used if --api-key is not set).\n")
+		fmt.Fprintf(os.Stderr, "  GEMINI_API_KEY: API Key (used if --api-key is not set and --vertex is not enabled).\n")
+		fmt.Fprintf(os.Stderr, "\nVertex AI Examples:\n")
+		fmt.Fprintf(os.Stderr, "  Using Vertex AI: %s --vertex --project-id=your-project-id\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  List Vertex models: %s --vertex --project-id=your-project-id --list-models\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nTimeout Examples:\n")
 		fmt.Fprintf(os.Stderr, "  30 second timeout: %s --global-timeout=30s\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  5 minute timeout: %s --global-timeout=5m\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nAuto-send Examples:\n")
+		fmt.Fprintf(os.Stderr, "  Auto-send test message after 5s: %s --auto-send=5s\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Auto-send with debugging: %s --auto-send=3s --global-timeout=30s\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nStdin Mode Examples:\n")
 		fmt.Fprintf(os.Stderr, "  Interactive: cat | %s --stdin\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  Piped: echo \"Hello\" | %s --stdin\n", os.Args[0])
@@ -111,40 +133,101 @@ func main() {
 
 	// Handle --list-models flag
 	if *listModelsFlag {
-		fmt.Println("Fetching available models...")
 		apiKey := *apiKeyFlag
-		if apiKey == "" {
+		grokAPIKey := *grokAPIKeyFlag
+		
+		if !*vertexFlag && !*grokFlag && apiKey == "" {
 			apiKey = os.Getenv("GEMINI_API_KEY")
 			if apiKey == "" {
 				fmt.Fprintln(os.Stderr, "Warning: No API key provided for listing models. Some models might not be visible.")
 			}
 		}
-
-		// Initialize a client and options just for listing models
-		client := &api.Client{
-			APIKey: apiKey,
+		
+		if *grokFlag && grokAPIKey == "" {
+			grokAPIKey = os.Getenv("GROK_API_KEY")
+			if grokAPIKey == "" {
+				fmt.Fprintln(os.Stderr, "Error: Grok API key is required when using --grok.")
+				fmt.Fprintln(os.Stderr, "Specify with --grok-api-key flag or set GROK_API_KEY environment variable.")
+				os.Exit(1)
+			}
 		}
 
-		models, err := client.ListModels(*filterModelsFlag)
-		if err != nil {
+		// Parse API versions flag for Gemini API
+		var apiVersions []string
+		if *apiVersionsFlag != "" && !*vertexFlag {
+			// Split by comma and clean up each entry
+			for _, v := range strings.Split(*apiVersionsFlag, ",") {
+				version := strings.TrimSpace(v)
+				if version != "" {
+					apiVersions = append(apiVersions, version)
+				}
+			}
+		}
+
+		// Create options for the model
+		var opts []aistudio.Option
+
+		// Check environment variables for backend configuration
+		envUseVertexAI := os.Getenv(aistudio.EnvUseVertexAI) == "true"
+		envUseGrok := os.Getenv(aistudio.EnvUseGrok) == "true"
+		envProjectID := os.Getenv(aistudio.EnvVertexAIProject)
+		envLocation := os.Getenv(aistudio.EnvVertexAILocation)
+
+		// Command-line flags override environment variables
+		useVertexAI := envUseVertexAI || *vertexFlag
+		useGrok := envUseGrok || *grokFlag
+		projectID := *projectIDFlag
+		if projectID == "" {
+			projectID = envProjectID
+		}
+		location := *locationFlag
+		if location == "" && envLocation != "" {
+			location = envLocation
+		}
+
+		// Configure based on the determined settings
+		if useGrok {
+			fmt.Printf("Using Grok API\n")
+			opts = append(opts, aistudio.WithGrok(true))
+			opts = append(opts, aistudio.WithAPIKey(grokAPIKey))
+		} else if useVertexAI {
+			if projectID == "" {
+				// Try to get project from Google Cloud env var
+				projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
+				if projectID == "" {
+					fmt.Fprintln(os.Stderr, "Error: Project ID is required when using Vertex AI.")
+					fmt.Fprintln(os.Stderr, "Specify with --project-id flag or set AISTUDIO_VERTEXAI_PROJECT or GOOGLE_CLOUD_PROJECT environment variable.")
+					os.Exit(1)
+				}
+			}
+			fmt.Printf("Using Vertex AI with project ID %s in location %s\n", projectID, location)
+
+			// Set up Vertex AI configuration
+			opts = append(opts, aistudio.WithVertexAI(true, projectID, location))
+
+			// Always pass the API key even with Vertex AI
+			// The client will use API key if provided, otherwise fall back to ADC
+			opts = append(opts, aistudio.WithAPIKey(apiKey))
+		} else {
+			fmt.Printf("Using Gemini API with version %s\n", *geminiVersionFlag)
+			opts = append(opts, aistudio.WithAPIKey(apiKey))
+			opts = append(opts, aistudio.WithGeminiAPIVersion(*geminiVersionFlag)) // Set API version
+		}
+
+		// Add list models option
+		opts = append(opts, aistudio.WithListModels(*filterModelsFlag, apiVersions...))
+
+		// Create a model with our options
+		model := aistudio.New(opts...)
+
+		// Run through the tea program to handle initialization and cleanup
+		// The WithListModels option will call os.Exit(0) after printing model list
+		if _, err := tea.NewProgram(model).Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error listing models: %v\n", err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Found %d models", len(models))
-		if *filterModelsFlag != "" {
-			fmt.Printf(" matching filter: %q", *filterModelsFlag)
-		}
-		fmt.Println()
-		fmt.Println("==========")
-
-		// Sort and display models
-		sort.Strings(models)
-		for _, model := range models {
-			fmt.Println(model)
-		}
-		fmt.Println("==========")
-		os.Exit(0)
+		// Should never reach here as WithListModels calls os.Exit(0)
 	}
 
 	// CPU profiling
@@ -221,13 +304,73 @@ func main() {
 
 	// Construct component options
 	opts := []aistudio.Option{
-		aistudio.WithAPIKey(apiKey), // Pass determined key (or "" for ADC)
 		aistudio.WithModel(*modelFlag),
 		aistudio.WithAudioOutput(*audioFlag, *voiceFlag),
 		aistudio.WithHistory(*historyFlag, *historyDirFlag),
 		aistudio.WithTools(*toolsFlag),
 		aistudio.WithGlobalTimeout(*globalTimeoutFlag),
+		aistudio.WithAutoSend(*autoSendFlag),
 		aistudio.WithToolApproval(*toolApprovalFlag),
+	}
+
+	// Configure based on environment variables first, then command-line flags
+	// Check environment variables for backend configuration
+	envUseVertexAI := os.Getenv(aistudio.EnvUseVertexAI) == "true"
+	envUseGrok := os.Getenv(aistudio.EnvUseGrok) == "true"
+	envProjectID := os.Getenv(aistudio.EnvVertexAIProject)
+	envLocation := os.Getenv(aistudio.EnvVertexAILocation)
+
+	// Command-line flags override environment variables
+	useVertexAI := envUseVertexAI || *vertexFlag
+	useGrok := envUseGrok || *grokFlag
+	projectID := *projectIDFlag
+	if projectID == "" {
+		projectID = envProjectID
+	}
+	location := *locationFlag
+	if location == "" && envLocation != "" {
+		location = envLocation
+	}
+
+	// Configure Grok API key
+	grokAPIKey := *grokAPIKeyFlag
+	if grokAPIKey == "" {
+		grokAPIKey = os.Getenv("GROK_API_KEY")
+	}
+
+	// Configure based on the determined settings
+	if useGrok {
+		if grokAPIKey == "" {
+			fmt.Fprintln(os.Stderr, "Error: Grok API key is required when using --grok.")
+			fmt.Fprintln(os.Stderr, "Specify with --grok-api-key flag or set GROK_API_KEY environment variable.")
+			os.Exit(1)
+		}
+		log.Printf("Using Grok API")
+		opts = append(opts, aistudio.WithGrok(true))
+		opts = append(opts, aistudio.WithAPIKey(grokAPIKey))
+	} else if useVertexAI {
+		if projectID == "" {
+			// Try to get project from Google Cloud env var
+			projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
+			if projectID == "" {
+				fmt.Fprintln(os.Stderr, "Error: Project ID is required when using Vertex AI.")
+				fmt.Fprintln(os.Stderr, "Specify with --project-id flag or set AISTUDIO_VERTEXAI_PROJECT or GOOGLE_CLOUD_PROJECT environment variable.")
+				os.Exit(1)
+			}
+		}
+		log.Printf("Using Vertex AI with project ID %s in location %s", projectID, location)
+
+		// Set up Vertex AI configuration
+		opts = append(opts, aistudio.WithVertexAI(true, projectID, location))
+
+		// Always pass the API key even with Vertex AI
+		// The client will use API key if provided, otherwise fall back to ADC
+		opts = append(opts, aistudio.WithAPIKey(apiKey))
+	} else {
+		// Use API key for Gemini API
+		log.Printf("Using Gemini API with version %s", *geminiVersionFlag)
+		opts = append(opts, aistudio.WithAPIKey(apiKey))                       // Pass determined key (or "" for ADC)
+		opts = append(opts, aistudio.WithGeminiAPIVersion(*geminiVersionFlag)) // Set API version
 	}
 
 	// Add system prompt if specified
@@ -254,6 +397,7 @@ func main() {
 	opts = append(opts, aistudio.WithWebSearch(*webSearchFlag))
 	opts = append(opts, aistudio.WithCodeExecution(*codeExecutionFlag))
 	opts = append(opts, aistudio.WithDisplayTokenCounts(*displayTokensFlag))
+	opts = append(opts, aistudio.WithWebSocket(*webSocketFlag))
 
 	// Add response configuration if specified
 	if *responseMimeTypeFlag != "" {
@@ -296,15 +440,25 @@ func main() {
 		// Use options that help with input focus and program behavior
 		p := tea.NewProgram(
 			model,
-			//tea.WithAltScreen(),
+			tea.WithAltScreen(),
 			tea.WithMouseCellMotion(), // Better mouse support
 		)
 
 		log.Println("Starting Bubble Tea program...")
-		if _, err := p.Run(); err != nil {
+
+		// Run the program
+		result, err := p.Run()
+		if err != nil {
 			log.Printf("Error running program: %v", err)
 			fmt.Fprintf(os.Stderr, "Error running program: %v\n", err)
 			os.Exit(1)
+		}
+
+		// Check if we have a model with a non-zero exit code
+		if model, ok := result.(*aistudio.Model); ok && model.ExitCode() != 0 {
+			exitCode := model.ExitCode()
+			log.Printf("Program requested exit with code: %d", exitCode)
+			os.Exit(exitCode)
 		}
 	}
 

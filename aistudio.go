@@ -2,7 +2,6 @@ package aistudio
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,10 +9,11 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
-	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
+	"cloud.google.com/go/ai/generativelanguage/apiv1beta/generativelanguagepb"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -29,10 +29,13 @@ import (
 
 const (
 	initialBackoffDuration = 1 * time.Second
-	maxBackoffDuration     = 30 * time.Second
-	backoffFactor          = 1.8
-	jitterFactor           = 0.2 // +/- 20%
-	maxStreamRetries       = 5
+	maxBackoffDuration     = 120 * time.Second      // Increased max backoff
+	backoffFactor          = 1.5                    // Slightly reduced to allow more attempts before hitting max
+	jitterFactor           = 0.1                    // Reduced to +/- 10% for more predictable backoffs
+	maxStreamRetries       = 10                     // Doubled max retries
+	connectionResetDelay   = 100 * time.Millisecond // Short delay for connection reset
+	keepaliveInterval      = 5 * time.Minute        // Send keepalive every 5 minutes
+	connectionTimeout      = 60 * time.Second       // Timeout for initial connection
 )
 
 // New creates a new Model instance with default settings and applies options.
@@ -117,8 +120,9 @@ func New(opts ...Option) *Model {
 		showSettingsPanel: false,   // Settings panel hidden by default
 
 		// History and tools default to disabled, enabled via options
-		historyEnabled: false,
-		enableTools:    false,
+		historyEnabled:    false,
+		enableTools:       false,
+		approvedToolTypes: make(map[string]bool), // Initialize empty map of approved tool types
 
 		// Initialize retry state
 		currentStreamBackoff: initialBackoffDuration,
@@ -140,6 +144,18 @@ func New(opts ...Option) *Model {
 		if m.playerCmd == "" {
 			log.Println("Warning: Could not auto-detect audio player. Audio output may fail.")
 		}
+	}
+
+	// Initialize AfplayPlayer if audio is enabled and player is afplay
+	if m.enableAudio && m.playerCmd == "afplay" {
+		log.Println("Initializing AfplayPlayer during startup")
+		m.afplayPlayer = audioplayer.NewAfplayPlayer(audioplayer.Config{
+			SampleRate:    audioSampleRate,
+			Channels:      1,
+			BitsPerSample: 16,
+			Format:        "s16le",
+		})
+		log.Printf("AfplayPlayer initialized: %v", m.afplayPlayer != nil)
 	}
 
 	return m
@@ -215,6 +231,138 @@ func (m *Model) InitModel() (tea.Model, error) {
 	return m, nil
 }
 
+// Update implements the BubbleTea model interface
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	log.Println("Update called with message:", msg)
+	// Check for quitting state immediately
+	if m.currentState == AppStateQuitting {
+		log.Println("In quitting state, exiting application")
+		return m, tea.Quit
+	}
+
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
+
+	// Handle audio playback ticker for progress updates
+	if m.tickerRunning && m.showAudioStatus && m.currentAudio != nil {
+		cmds = append(cmds, playbackTickCmd())
+	}
+
+	// Special handling if waiting for tool approval (prioritized UI state)
+	if m.showToolApproval && len(m.pendingToolCalls) > 0 {
+		// Only process key messages for tool approval dialog, ignore other updates
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			return m.handleKeyMsg(keyMsg)
+		}
+	}
+
+	// Handle different message types
+	switch msg := msg.(type) {
+	// case tea.KeyMsg:
+	// // Process common keyboard shortcuts (quit, toggle settings, etc.)
+	// return m.handleKeyMsg(msg)
+
+	case tea.WindowSizeMsg:
+		// Handle window resizing
+		m.viewport.Height = msg.Height - 8 // Reserve space for input and status
+		m.viewport.Width = msg.Width
+		m.textarea.SetWidth(msg.Width)
+
+		// Update UI right away
+		m.viewport.SetContent(m.renderAllMessages())
+		return m, nil
+
+	case tea.MouseMsg:
+		// Handle mouse events if needed
+		return m, nil
+
+	case playbackTickMsg:
+		// Update audio playback status
+		if m.showAudioStatus && m.currentAudio != nil {
+			m.viewport.SetContent(m.renderAllMessages()) // Re-render to show updated playback status
+		}
+		return m, playbackTickCmd() // Continue ticker
+
+	case audioPlaybackStartedMsg:
+		// Handle audio playback starting
+		m.tickerRunning = true
+		if idx := msg.chunk.MessageIndex; idx >= 0 && idx < len(m.messages) {
+			m.messages[idx].IsPlaying = true
+		}
+		m.currentAudio = &msg.chunk
+		m.viewport.SetContent(m.renderAllMessages())
+		return m, playbackTickCmd() // Start ticker for progress updates
+
+	case audioPlaybackCompletedMsg:
+		// Handle audio playback ending
+		m.tickerRunning = false
+		if idx := msg.chunk.MessageIndex; idx >= 0 && idx < len(m.messages) {
+			m.messages[idx].IsPlaying = false
+			m.messages[idx].IsPlayed = true
+		}
+		m.viewport.SetContent(m.renderAllMessages())
+		return m, nil
+
+	case audioPlaybackErrorMsg:
+		// Handle audio playback errors
+		m.tickerRunning = false
+		m.messages = append(m.messages, formatError(fmt.Errorf("audio error: %v", msg.err)))
+		m.viewport.SetContent(m.renderAllMessages())
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case func() tea.Msg:
+		// Handle deferred function messages (from uiUpdateChan)
+		return m, tea.Batch(msg) // Execute the function
+
+	case toolCallSentMsg:
+		// Tool call sent successfully
+		return m, m.receiveBidiStreamCmd() // Continue receiving from stream
+
+	case autoSendMsg:
+		// Auto-send test message
+		testMessage := fmt.Sprintf("Test message sent automatically after %v delay for debugging connection stability.", m.autoSendDelay)
+		log.Printf("[DEBUG] Auto-sending test message: %s", testMessage)
+		
+		// Set the message in the textarea and trigger send
+		m.textarea.SetValue(testMessage)
+		m.currentState = AppStateResponding
+		
+		// Clear the textarea after sending
+		m.textarea.SetValue("")
+		
+		// Send the message
+		return m, m.sendToStreamCmd(testMessage)
+
+	default:
+		// Handle stream-related messages
+		return m.handleStreamMsg(msg)
+	}
+
+	// Handle textarea updates
+	if m.focusedComponent == "input" {
+		m.textarea, cmd = m.textarea.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
+	// Update viewport
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
+
+	// Handle settings panel update if showing
+	if m.showSettingsPanel && m.settingsPanel != nil {
+		*m.settingsPanel, cmd = m.settingsPanel.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
+	// Listen for more UI updates
+	cmds = append(cmds, m.listenForUIUpdatesCmd())
+
+	return m, tea.Batch(cmds...)
+}
+
 // Init implements the BubbleTea model interface
 func (m *Model) Init() tea.Cmd {
 	log.Println("Init called - starting the application")
@@ -274,6 +422,7 @@ func (m *Model) Init() tea.Cmd {
 	if m.enableTools && m.toolManager != nil {
 		toolCount := len(m.toolManager.RegisteredToolDefs)
 		log.Printf("Available tools: %d", toolCount)
+		log.Printf("Tool approval required: %t", m.requireApproval)
 		log.Printf("Tools info: Press Ctrl+T to list all available tools")
 
 		// List the names of available tools
@@ -291,10 +440,6 @@ func (m *Model) Init() tea.Cmd {
 	// --- Continue with the original Init behavior ---
 	// Start with ready state
 	//m.currentState = AppStateReady
-
-	// Add welcome message command
-	cmds = append(cmds, tea.Printf("\n\033[1;33m%s:\033[0m %s\n", "System",
-		fmt.Sprintf("Welcome to aistudio! Model: %s", m.modelName)))
 
 	cmds = append(cmds, m.setupInitialUICmd())
 	cmds = append(cmds, m.initStreamCmd())
@@ -324,6 +469,16 @@ func (m *Model) UpdateHistory(message Message) {
 			}
 		}
 	}()
+}
+
+// ExitCode returns the exit code that should be used when the program terminates
+func (m *Model) ExitCode() int {
+	return m.exitCode
+}
+
+// ToolManager returns the model's tool manager
+func (m *Model) ToolManager() *ToolManager {
+	return m.toolManager
 }
 
 // ProcessStdinMode processes messages from stdin without running the TUI
@@ -361,7 +516,7 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 	}
 
 	// Initialize the bidi stream
-	config := api.ClientConfig{
+	config := api.StreamClientConfig{
 		ModelName:    m.modelName,
 		EnableAudio:  false, // Disable audio in stdin mode
 		SystemPrompt: m.systemPrompt,
@@ -370,6 +525,8 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 		TopP:            m.topP,
 		TopK:            m.topK,
 		MaxOutputTokens: m.maxOutputTokens,
+		// Feature flags
+		EnableWebSocket: m.enableWebSocket,
 	}
 
 	// Add tool definitions if enabled
@@ -379,7 +536,7 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 
 	// Initialize bidirectional stream
 	var err error
-	m.bidiStream, err = m.client.InitBidiStream(m.rootCtx, config)
+	m.bidiStream, err = m.client.InitBidiStream(m.rootCtx, &config)
 	if err != nil {
 		return fmt.Errorf("failed to initialize bidirectional stream: %w", err)
 	}
@@ -432,7 +589,8 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 				// Extract and process tool calls
 				toolCalls := ExtractToolCalls(&output)
 				if len(toolCalls) > 0 {
-					results, err := m.executeToolCalls(toolCalls)
+					// Use processToolCalls which handles approval logic
+					results, err := m.processToolCalls(toolCalls)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error processing tool calls: %v\n", err)
 					} else if len(results) > 0 {
@@ -473,7 +631,7 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 		}
 
 		// Output response
-		fmt.Println(responseText.String())
+		fmt.Println("rt:", responseText.String())
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -481,19 +639,6 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// initCmd returns the command sequence to start the application logic.
-func (m *Model) initCmd() tea.Cmd {
-	// Transition state before returning the command
-	//m.currentState = AppStateInitializing
-	return tea.Batch(
-		// m.spinner.Tick, // Spinner tick is handled globally now based on state
-		tea.Sequence(
-			waitForFocusCmd(),                         // Defined in stream.go
-			func() tea.Msg { return initStreamMsg{} }, // Defined in stream.go
-		),
-	)
 }
 
 // playbackTickCmd creates a command for the playback UI ticker.
@@ -530,6 +675,11 @@ func (m *Model) setupInitialUICmd() tea.Cmd {
 		m.startAudioProcessor() // Defined in audio_player.go
 	}
 
+	// Start auto-send timer if enabled
+	if m.autoSendEnabled {
+		cmds = append(cmds, m.autoSendCmd())
+	}
+
 	return tea.Batch(cmds...)
 }
 
@@ -564,8 +714,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// }
 
 	switch msg.String() {
-	// Add handlers for Y/N keys for tool approval
-	case "y", "Y": // Approve tool call
+	// Add handlers for numbered dialog options for tool approval
+	case "y", "Y", "1": // Approve tool call (Y key or option 1)
 		if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
 			// Get the current tool call
 			approvedCall := m.pendingToolCalls[m.approvalIndex]
@@ -617,8 +767,56 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 			return m, tea.Batch(cmds...)
 		}
+	case "2": // Approve tool call and don't ask again for this tool type
+		if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
+			// Get the current tool call
+			approvedCall := m.pendingToolCalls[m.approvalIndex]
+			approvedCalls := []ToolCall{approvedCall} // Keep for executeToolCalls
 
-	case "n", "N": // Deny tool call
+			// Mark this tool type as pre-approved for future calls
+			m.approvedToolTypes[approvedCall.Name] = true
+			log.Printf("Tool type '%s' marked as pre-approved for future calls", approvedCall.Name)
+
+			// Add formatted message for executing the tool call
+			m.messages = append(m.messages, formatToolCallMessage(approvedCall, "Executing..."))
+			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Tool type '%s' will be auto-approved in the future", approvedCall.Name)))
+			log.Printf("Tool call approved and executing: %s", approvedCall.Name)
+
+			// Process the tool call
+			results, err := m.executeToolCalls(approvedCalls)
+			if err != nil {
+				log.Printf("Error executing tool call: %v", err)
+				m.messages = append(m.messages, formatError(fmt.Errorf("error executing tool call '%s': %w", approvedCall.Name, err)))
+			} else if len(results) > 0 {
+				// Add formatted message for the successful result
+				if len(results) == 1 {
+					m.messages = append(m.messages, formatToolResultMessage(results[0].Id, results[0].Name, results[0].Response, ToolCallStatusCompleted))
+				} else {
+					// Handle unexpected multiple results if necessary
+					log.Printf("Warning: Expected 1 result for tool call %s, got %d", approvedCall.Name, len(results))
+					for _, res := range results {
+						m.messages = append(m.messages, formatToolResultMessage(res.Id, res.Name, res.Response, ToolCallStatusUnknown))
+					}
+				}
+				// Send results back to model
+				cmds = append(cmds, m.sendToolResultsCmd(results))
+			}
+
+			// Move to next tool call or close modal
+			m.approvalIndex++
+			if m.approvalIndex >= len(m.pendingToolCalls) {
+				// All tool calls processed, close the modal
+				m.showToolApproval = false
+				m.pendingToolCalls = nil
+				m.approvalIndex = 0
+			}
+
+			// Update UI
+			m.viewport.SetContent(m.renderAllMessages())
+			m.viewport.GotoBottom()
+			return m, tea.Batch(cmds...)
+		}
+	case "n", "N", "3", "esc": // Deny tool call (N key, option 3, or escape key)
 		if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
 			// Get the current tool call
 			deniedCall := m.pendingToolCalls[m.approvalIndex]
@@ -700,6 +898,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...) // Return early
 
 	case "tab":
+		// Handle tab navigation between tool calls in approval mode
+		if m.showToolApproval && len(m.pendingToolCalls) > 1 && m.approvalIndex < len(m.pendingToolCalls)-1 {
+			// Move to the next tool call
+			m.approvalIndex++
+
+			// Update UI
+			m.viewport.SetContent(m.renderAllMessages())
+			m.viewport.GotoBottom()
+			return m, tea.Batch(cmds...)
+		}
+
 		// Handle tab navigation between components
 		if m.showSettingsPanel {
 			if m.focusedComponent == "input" {
@@ -719,6 +928,27 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		log.Printf("Mic input simulation toggled: %v", m.micActive)
 		if m.micActive {
 			m.videoInputMode = VideoInputNone
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "ctrl+a": // Toggle tool approval
+		if m.enableTools {
+			// Toggle the approval requirement
+			m.requireApproval = !m.requireApproval
+
+			// Show a message about the change
+			if m.requireApproval {
+				m.messages = append(m.messages, formatMessage("System", "Tool approval is now ENABLED. All tool calls will require explicit approval."))
+			} else {
+				m.messages = append(m.messages, formatMessage("System", "Tool approval is now DISABLED. Tools will run automatically without approval."))
+
+				// Clear any pre-approvals when disabling approval
+				m.approvedToolTypes = make(map[string]bool)
+			}
+
+			// Update UI
+			m.viewport.SetContent(m.renderAllMessages())
+			m.viewport.GotoBottom()
 		}
 		return m, tea.Batch(cmds...) // Return early
 
@@ -793,8 +1023,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			log.Printf("Sending message: %s", txt)
 			m.messages = append(m.messages, formatMessage("You", txt)) // helpers.go
 
-			// Print to stdout through Bubble Tea to avoid rendering clashes
-			cmds = append(cmds, tea.Printf("\n\033[1m%s:\033[0m %s\n", "You", txt))
 			m.textarea.Reset()
 			m.textarea.Focus()
 			// cmds = append(cmds, m.spinner.Tick) // Spinner is managed based on state in View/Update
@@ -857,19 +1085,35 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case initStreamMsg: // stream.go
 		// If we're retrying after an error and client is not nil, reset the client to fix connection issues
+		// If we're retrying after an error and client is not nil, reset the client to fix connection issues
 		if m.client != nil && m.streamRetryAttempt > 0 {
+			// Perform more thorough cleanup on retry
+
+			// Close any existing streams first to ensure proper resource cleanup
+			if m.stream != nil {
+				m.stream.CloseSend()
+				m.stream = nil
+			}
+			if m.bidiStream != nil {
+				m.bidiStream.CloseSend()
+				m.bidiStream = nil
+			}
+
 			// Close existing client connection
 			if err := m.client.Close(); err != nil {
 				log.Printf("Warning: Error closing client: %v", err)
 			}
+
+			// Short delay to allow socket cleanup
+			time.Sleep(100 * time.Millisecond)
+
 			// Create a new client instance
 			m.client = &api.Client{}
 			if m.apiKey != "" {
 				m.client.APIKey = m.apiKey
 			}
-			log.Println("Client reset for reconnection attempt")
+			log.Printf("Client fully reset for reconnection attempt %d", m.streamRetryAttempt)
 		}
-
 		m.messages = append(m.messages, formatMessage("System", "Connecting to Gemini..."))
 		m.viewport.SetContent(m.renderAllMessages())
 		m.viewport.GotoBottom()
@@ -907,7 +1151,9 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamRetryAttempt = 0
 		m.currentStreamBackoff = initialBackoffDuration
 		log.Println("Bidirectional stream connection successful, retry counter reset.")
-		cmds = append(cmds, m.receiveBidiStreamCmd()) // Start receiving
+
+		// Start receiving messages
+		cmds = append(cmds, m.receiveBidiStreamCmd())
 
 	case streamResponseMsg: // stream.go (One-way stream response)
 		//m.currentState = AppStateWaiting // Ensure state reflects waiting
@@ -925,10 +1171,9 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Append if last message was from Gemini recently and not a tool call/result/code
 				if m.messages[lastIdx].Sender == "Gemini" &&
 					time.Since(m.messages[lastIdx].Timestamp) < 3*time.Second &&
-					!m.messages[lastIdx].IsToolCall &&
+					!m.messages[lastIdx].IsToolCall() &&
 					!m.messages[lastIdx].IsExecutableCode &&
-					!m.messages[lastIdx].IsExecutableCodeResult &&
-					m.messages[lastIdx].FunctionCall == nil { // Also check for function call
+					!m.messages[lastIdx].IsExecutableCodeResult {
 					targetMsgIdx = lastIdx
 					createNeeded = false
 				}
@@ -981,7 +1226,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Save message to history if enabled and content exists or it's a function call
-			if m.historyEnabled && m.historyManager != nil && targetMsgIdx >= 0 && (m.messages[targetMsgIdx].Content != "" || m.messages[targetMsgIdx].FunctionCall != nil) {
+			if m.historyEnabled && m.historyManager != nil && targetMsgIdx >= 0 && m.messages[targetMsgIdx].Content != "" {
 				if createNeeded {
 					m.historyManager.AddMessage(m.messages[targetMsgIdx])
 				} else {
@@ -1036,11 +1281,10 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			needToCreate := true
 			if len(m.messages) > 0 {
 				lastIdx := len(m.messages) - 1
-				if m.messages[lastIdx].Sender == "Gemini" &&
-					!m.messages[lastIdx].IsToolCall &&
+				if m.messages[lastIdx].Sender == senderNameModel &&
+					!m.messages[lastIdx].IsToolCall() &&
 					!m.messages[lastIdx].IsExecutableCode &&
-					!m.messages[lastIdx].IsExecutableCodeResult &&
-					m.messages[lastIdx].FunctionCall == nil {
+					!m.messages[lastIdx].IsExecutableCodeResult {
 					// Found existing message to update
 					needToCreate = false
 					log.Printf("Updating existing message #%d", lastIdx)
@@ -1076,9 +1320,8 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Create a *new* message specifically for this tool call request
 				// Note: This message won't contain regular text or audio from this chunk
 				newMessage := Message{
-					Sender:     senderNameModel,
-					IsToolCall: true,
-					Timestamp:  time.Now(),
+					Sender:    senderNameModel,
+					Timestamp: time.Now(),
 				}
 
 				jsonArgs, err := msg.output.FunctionCall.Args.MarshalJSON()
@@ -1098,31 +1341,12 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// or we adapt the logic here. Let's assume it returns a slice.
 				toolCalls := ExtractToolCalls(&msg.output) // This should ideally extract from newMessage.ToolCall or msg.output.FunctionCall
 
-				// Add tool calls to pending list for approval/execution
-				m.pendingToolCalls = append(m.pendingToolCalls, toolCalls...)
-
-				if m.requireApproval {
-					// Transition state to wait for user approval
-					m.currentState = AppStateWaiting
-					m.showToolApproval = true
-					m.approvalIndex = 0 // Start with the first pending call
-					log.Printf("Waiting for user approval for %d tool call(s)", len(m.pendingToolCalls))
-					// Update UI to show modal
-					m.viewport.SetContent(m.renderAllMessages())
-					m.viewport.GotoBottom()
-				} else {
-					// Auto-approve and process
+				if len(toolCalls) > 0 {
+					// Use centralized process tool calls, which handles both approval and execution
+					// This will automatically check for auto-approved tool types
 					m.currentState = AppStateWaiting // Transition state
-					log.Printf("Auto-processing %d tool call(s)", len(toolCalls))
 
-					// Add formatted messages for executing the tool calls
-					for _, tc := range toolCalls {
-						m.messages = append(m.messages, formatToolCallMessage(tc, "Executing...")) // Use helper
-					}
-					m.viewport.SetContent(m.renderAllMessages())
-					m.viewport.GotoBottom()
-
-					// Process the tool calls (this might need to become a command)
+					// Process the tool calls using our unified tool processing logic
 					results, err := m.processToolCalls(toolCalls)
 					if err != nil {
 						log.Printf("Error auto-processing tool calls: %v", err)
@@ -1210,10 +1434,9 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Append if last message was from Gemini recently and not a tool call/result/code/func
 					if m.messages[lastIdx].Sender == "Gemini" &&
 						time.Since(m.messages[lastIdx].Timestamp) < 3*time.Second &&
-						!m.messages[lastIdx].IsToolCall &&
+						!m.messages[lastIdx].IsToolCall() &&
 						!m.messages[lastIdx].IsExecutableCode &&
-						!m.messages[lastIdx].IsExecutableCodeResult &&
-						m.messages[lastIdx].FunctionCall == nil {
+						!m.messages[lastIdx].IsExecutableCodeResult {
 						targetMsgIdx = lastIdx
 						createNeeded = false
 					}
@@ -1225,19 +1448,6 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Safety/Grounding/Tokens added by ProcessGenerativeLanguageResponse
 					m.messages = append(m.messages, newMessage)
 
-					// Print Gemini response to stdout with rich formatting using tea.Printf
-					// to avoid rendering clashes with Bubble Tea
-					cmds = append(cmds, tea.Printf("\n\033[1;35m%s:\033[0m %s", "Gemini", msg.output.Text))
-
-					// If there's audio data, print a player status indicator
-					if len(msg.output.Audio) > 0 {
-						duration := float64(len(msg.output.Audio)) / 48000.0
-						cmds = append(cmds, tea.Printf("\n    \033[36m🔊 Audio: %.1f seconds\033[0m", duration))
-					}
-					// Add newline at the end when full message received
-					if msg.output.TurnComplete {
-						cmds = append(cmds, tea.Printf("\n"))
-					}
 					targetMsgIdx = len(m.messages) - 1
 
 					// Save new message to history if enabled
@@ -1254,20 +1464,6 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.messages[targetMsgIdx].Content += msg.output.Text
 					m.messages[targetMsgIdx].Timestamp = time.Now()
 
-					// Print the appended text to stdout using tea.Printf
-					// 			cmds = append(cmds, tea.Printf("%s", msg.output.Text))
-
-					// 			// If this is the final chunk, end with a newline
-					// 			if msg.output.TurnComplete {
-					// 				cmds = append(cmds, tea.Printf("\n"))
-					// 			}
-
-					// 		// Update message in history
-					// 		// TODO: fix this
-					// 		// if m.historyEnabled && m.historyManager != nil {
-					// 		// 	m.historyManager.UpdateLastMessage(m.messages[targetMsgIdx])
-					// 		// }
-					// 	}
 					if helpers.IsAudioTraceEnabled() {
 						log.Printf("[AUDIO_PIPE] Appending to existing message #%d for incoming bidi stream data", targetMsgIdx)
 					}
@@ -1352,6 +1548,51 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case streamErrorMsg: // stream.go
 		// Error receiving or connecting
+		// Categorize the error for better handling
+		var errorCategory string
+		var shouldRetry bool = true
+
+		// Check for specific error patterns
+		errString := msg.err.Error()
+		switch {
+		case strings.Contains(errString, "bad file descriptor"):
+			errorCategory = "socket descriptor issue"
+			// This is a socket-level issue that needs thorough cleanup
+			runtime.GC() // Try to clean up unused file descriptors
+		case strings.Contains(errString, "connection refused"):
+			errorCategory = "connection refused"
+		case strings.Contains(errString, "connection reset"):
+			errorCategory = "connection reset"
+		case strings.Contains(errString, "context canceled"):
+			errorCategory = "context canceled"
+			// Don't retry canceled contexts
+			shouldRetry = false
+		case strings.Contains(errString, "deadline exceeded"):
+			errorCategory = "timeout"
+		case strings.Contains(errString, "certificate"):
+			errorCategory = "TLS/certificate issue"
+		case strings.Contains(errString, "rate limit"):
+			errorCategory = "rate limited"
+		case strings.Contains(errString, "model only supports text output") ||
+			strings.Contains(errString, "Multi-modal output is not supported"):
+			errorCategory = "model compatibility error"
+			// Don't retry when model doesn't support requested features (like audio)
+			shouldRetry = false
+		case strings.Contains(errString, "InvalidArgument"):
+			errorCategory = "invalid argument"
+			// Don't retry API argument errors - they won't resolve with retries
+			shouldRetry = false
+		case strings.Contains(errString, "RESOURCE_EXHAUSTED"):
+			errorCategory = "resource exhausted"
+			// Don't retry resource exhaustion errors immediately
+			shouldRetry = false
+			// Add longer backoff for rate limiting
+			m.currentStreamBackoff = time.Duration(float64(m.currentStreamBackoff) * 2)
+		default:
+			errorCategory = "unknown error"
+		}
+
+		// Clean up resources
 		m.stream = nil // Ensure streams are nil
 		m.bidiStream = nil
 		if m.streamCtxCancel != nil { // Cancel existing context if any
@@ -1359,30 +1600,78 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamCtxCancel = nil
 		}
 
-		m.streamRetryAttempt++
+		log.Printf("Stream error detected: %s - %v", errorCategory, msg.err)
 
-		if m.streamRetryAttempt > maxStreamRetries {
-			// Max retries reached - Transition to Error state
-			log.Printf("Stream error: Max retries (%d) reached. Giving up. Error: %v", maxStreamRetries, msg.err)
+		// Only increment retry counter if we're going to retry
+		if shouldRetry {
+			m.streamRetryAttempt++
+		}
+
+		if !shouldRetry || m.streamRetryAttempt > maxStreamRetries {
+			// Max retries reached or non-retryable error - Transition to Error state
+			var errorDetails string
+			if shouldRetry {
+				errorDetails = fmt.Sprintf("Max retries (%d) reached. Giving up.", maxStreamRetries)
+			} else {
+				if errorCategory == "model compatibility error" {
+					errorDetails = "This model doesn't support the requested features (e.g., audio output)."
+				} else if errorCategory == "invalid argument" {
+					errorDetails = "The API rejected the connection due to invalid arguments."
+				} else if errorCategory == "resource exhausted" {
+					errorDetails = "The API has exhausted its resources. Try again later."
+				} else {
+					errorDetails = "Error is not retryable."
+				}
+			}
+			log.Printf("Stream error: %s - %v. %s", errorCategory, msg.err, errorDetails)
+
 			m.currentState = AppStateError
-			m.err = fmt.Errorf("stream failed after %d retries: %w", maxStreamRetries, msg.err)
-			m.messages = append(m.messages, formatError(m.err))
+			if !shouldRetry {
+				m.err = fmt.Errorf("stream error (%s): %w", errorCategory, msg.err)
+			} else {
+				m.err = fmt.Errorf("stream failed after %d retries (%s): %w", maxStreamRetries, errorCategory, msg.err)
+			}
+
+			// Create a detailed error message for the user
+			errorMessage := formatMessage("System", fmt.Sprintf("Error: %s\nDetails: %v\n\n%s\n\nTry changing models or disabling audio if using a model that doesn't support it.",
+				errorCategory, msg.err, errorDetails))
+
+			m.messages = append(m.messages, errorMessage)
 			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
-			// Reset retry state for potential future manual attempts? Or require restart?
-			// m.streamRetryAttempt = 0
-			// m.currentStreamBackoff = initialBackoffDuration
+
+			// Exit with non-zero code if this is the initial connection attempt
+			if len(m.messages) <= 2 { // Only system messages or startup messages
+				log.Printf("Failed to establish initial connection. Exiting with error code 1")
+				fmt.Fprintf(os.Stderr, "Error: Failed to establish initial connection: %v\n", m.err)
+				// Signal to quit with error code
+				m.exitCode = 1
+				cmds = append(cmds, func() tea.Msg {
+					return tea.Quit()
+				})
+			}
+
+			// Reset retry state for potential future manual attempts
+			m.streamRetryAttempt = 0
+			m.currentStreamBackoff = initialBackoffDuration
 		} else {
 			// Attempting retry - Transition back to Initializing state
 			m.currentState = AppStateInitializing
+
+			// Ensure our backoff has some jitter to avoid thundering herd issues
 			jitter := time.Duration(float64(m.currentStreamBackoff) * jitterFactor * (rand.Float64()*2 - 1)) // +/- jitterFactor
 			delay := m.currentStreamBackoff + jitter
 			if delay < 0 {
 				delay = 100 * time.Millisecond // Ensure delay is not negative
 			}
 
-			log.Printf("Stream error: Attempt %d/%d failed. Retrying in %v. Error: %v", m.streamRetryAttempt, maxStreamRetries, delay, msg.err)
-			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Connection error. Retrying in %v (attempt %d/%d)...", delay.Round(time.Second), m.streamRetryAttempt, maxStreamRetries)))
+			log.Printf("Stream error (%s): Attempt %d/%d failed. Retrying in %v. Error: %v",
+				errorCategory, m.streamRetryAttempt, maxStreamRetries, delay, msg.err)
+
+			m.messages = append(m.messages, formatMessage("System",
+				fmt.Sprintf("Connection error (%s). Retrying in %v (attempt %d/%d)...\nDetails: %v",
+					errorCategory, delay.Round(time.Second), m.streamRetryAttempt, maxStreamRetries, msg.err)))
+
 			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 
@@ -1392,7 +1681,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentStreamBackoff = maxBackoffDuration
 			}
 
-			// Schedule the retry
+			// Schedule the retry with the calculated delay
 			cmds = append(cmds, tea.Tick(delay, func(t time.Time) tea.Msg {
 				return initStreamMsg{} // Trigger reconnection attempt
 			}))
@@ -1430,492 +1719,62 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// handleAudioMsg handles messages related to audio playback and processing.
-func (m *Model) handleAudioMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-	// startPlaybackTicker := false // Handled in main Update
-
-	switch msg := msg.(type) {
-	case audioPlaybackStartedMsg: // types.go
-		log.Printf("[UI] Received audioPlaybackStartedMsg: Msg #%d, Size=%d", msg.chunk.MessageIndex, len(msg.chunk.Data))
-		m.isAudioProcessing = true // Mark that playback is active
-		idx := msg.chunk.MessageIndex
-		if idx >= 0 && idx < len(m.messages) {
-			m.messages[idx].IsPlaying = true
-			m.messages[idx].IsPlayed = false
-		} else {
-			log.Printf("[UI Warning] audioPlaybackStartedMsg: Invalid message index %d", idx)
-		}
-		m.viewport.SetContent(m.renderAllMessages())
-
-		// Make sure textarea maintains focus when audio starts playing
-		if m.focusedComponent == "input" {
-			m.textarea.Focus()
-		}
-		// startPlaybackTicker = true // Signal to start ticker - Handled in main Update
-
-	case audioPlaybackCompletedMsg: // types.go
-		log.Printf("[UI] Received audioPlaybackCompletedMsg: Msg #%d, Size=%d", msg.chunk.MessageIndex, len(msg.chunk.Data))
-		m.isAudioProcessing = false // Mark playback as inactive AFTER processing this message
-		idx := msg.chunk.MessageIndex
-		if idx >= 0 && idx < len(m.messages) {
-			if m.messages[idx].IsPlaying { // Check if it was the one playing
-				m.messages[idx].IsPlaying = false
-				m.messages[idx].IsPlayed = true
+// monitorConnection monitors the gRPC/WebSocket connection health and logs debugging information
+func (m *Model) monitorConnection() {
+	log.Printf("[DEBUG] Starting connection health monitoring")
+	
+	ticker := time.NewTicker(DebuggingLogInterval)
+	defer ticker.Stop()
+	
+	startTime := time.Now()
+	lastLogTime := startTime
+	
+	for {
+		select {
+		case <-ticker.C:
+			// Check if context is still valid
+			if m.streamCtx == nil {
+				log.Printf("[DEBUG] Stream context is nil, stopping connection monitor")
+				return
+			}
+			
+			if m.streamCtx.Err() != nil {
+				log.Printf("[DEBUG] Stream context error: %v, stopping connection monitor", m.streamCtx.Err())
+				return
+			}
+			
+			// Log connection health
+			now := time.Now()
+			uptime := now.Sub(startTime)
+			timeSinceLastLog := now.Sub(lastLogTime)
+			
+			log.Printf("[DEBUG] Connection health check - Uptime: %v, Since last log: %v", 
+				uptime.Truncate(time.Second), timeSinceLastLog.Truncate(time.Second))
+			
+			// Log connection state details
+			if m.bidiStream != nil {
+				log.Printf("[DEBUG] Bidirectional stream is active")
+			} else if m.stream != nil {
+				log.Printf("[DEBUG] Unidirectional stream is active")
 			} else {
-				log.Printf("[UI Warning] audioPlaybackCompletedMsg: Message #%d was not marked as playing.", idx)
-				// Mark as played anyway if not already
-				if !m.messages[idx].IsPlayed {
-					m.messages[idx].IsPlayed = true
-				}
+				log.Printf("[DEBUG] No active stream connection")
 			}
-		} else {
-			log.Printf("[UI Warning] audioPlaybackCompletedMsg: Invalid message index %d", idx)
-		}
-		// Remove completed chunk from UI queue
-		for i, qChunk := range m.audioQueue {
-			// Simple comparison; might need more robust check if multiple identical chunks possible
-			if bytes.Equal(qChunk.Data, msg.chunk.Data) && qChunk.MessageIndex == msg.chunk.MessageIndex {
-				m.audioQueue = append(m.audioQueue[:i], m.audioQueue[i+1:]...)
-				break
-			}
-		}
-		// Clear current audio reference *after* processing completion
-		if m.currentAudio != nil && bytes.Equal(m.currentAudio.Data, msg.chunk.Data) {
-			m.currentAudio = nil
-		}
-		m.viewport.SetContent(m.renderAllMessages())
-
-		// Ensure textarea has focus after audio playback completes
-		// This is critical for keeping the input prompt visible
-		if m.focusedComponent == "input" {
-			m.textarea.Focus()
-		}
-
-	case audioQueueUpdatedMsg: // types.go
-		// Optional: Could trigger a footer refresh if needed
-		// log.Println("[UI] Audio queue updated.")
-
-	case audioPlaybackErrorMsg: // types.go
-		audioErr := fmt.Errorf("audio playback error: %w", msg.err)
-		m.messages = append(m.messages, formatError(audioErr))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
-		m.err = nil                 // Clear main error status line, show in history
-		m.isAudioProcessing = false // Ensure processing stops on error
-
-	case flushAudioBufferMsg: // types.go
-		if len(m.consolidatedAudioData) > 0 {
-			log.Printf("[UI] Handling audio buffer flush trigger (%d bytes)", len(m.consolidatedAudioData))
-			cmds = append(cmds, m.flushAudioBuffer()) // audio_manager.go
-		}
-
-	case playbackTickMsg: // types.go
-		// Only update UI and continue ticking if audio is actually playing
-		if m.isAudioProcessing {
-			m.viewport.SetContent(m.renderAllMessages())
-
-			// Ensure textarea stays focused during playback ticks
-			if m.focusedComponent == "input" {
-				m.textarea.Focus()
-			}
-
-			cmds = append(cmds, playbackTickCmd()) // Continue ticking
-		} else {
-			// Audio stopped, ensure ticker flag is off
-			m.tickerRunning = false
-			log.Println("[UI] Playback stopped, ticker halting.")
-			// Do NOT return playbackTickCmd()
-
-			// Make sure we regain focus when playback stops
-			if m.focusedComponent == "input" {
-				m.textarea.Focus()
-			}
+			
+			// Log current application state
+			log.Printf("[DEBUG] App state: %v, Retry attempt: %d", m.currentState, m.streamRetryAttempt)
+			
+			lastLogTime = now
+			
+		case <-m.streamCtx.Done():
+			log.Printf("[DEBUG] Stream context cancelled, stopping connection monitor")
+			return
 		}
 	}
-	return m, tea.Batch(cmds...)
 }
 
-// handleToolMsg handles messages related to tool calls and results.
-func (m *Model) handleToolMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	switch msg := msg.(type) {
-	case toolCallSentMsg:
-		// Tool call results sent successfully, nothing to do
-		log.Println("Tool call results sent successfully.")
-
-	case toolCallResultMsg:
-		// Process results from an asynchronous tool call
-		log.Printf("Received %d tool call results for tool %s", len(msg.results), msg.call.Name)
-
-		if len(msg.results) > 0 {
-			// Find the message for this tool call
-			var toolCallMsgIdx int = -1
-			for i, message := range m.messages {
-				if message.IsToolCall && message.ToolCall != nil && message.ToolCall.ID == msg.call.ID {
-					toolCallMsgIdx = i
-					break
-				}
-			}
-
-			// If we found the tool call message, update its status
-			if toolCallMsgIdx >= 0 {
-				// Update the tool call message to show completed status
-				m.messages[toolCallMsgIdx] = formatToolCallMessage(msg.call, ToolCallStatusCompleted)
-
-				// For each result, add a tool result message right after the tool call
-				for _, result := range msg.results {
-					resultMsg := formatToolResultMessage(result.Id, result.Name, result.Response, ToolCallStatusCompleted)
-					
-					// Insert the result message after the tool call message
-					if toolCallMsgIdx < len(m.messages)-1 {
-						// This shifts messages to make room for inserting the result right after the tool call
-						m.messages = append(m.messages[:toolCallMsgIdx+1], append([]Message{resultMsg}, m.messages[toolCallMsgIdx+1:]...)...)
-					} else {
-						// Just append if the tool call is the last message
-						m.messages = append(m.messages, resultMsg)
-					}
-				}
-
-				// Check if this was the last pending tool call
-				pendingToolCalls := false
-				for _, message := range m.messages {
-					if message.IsToolCall && message.ToolCall != nil &&
-						(message.ToolStatus == ToolCallStatusPending || message.ToolStatus == ToolCallStatusRunning) {
-						pendingToolCalls = true
-						break
-					}
-				}
-
-				// If no more pending tool calls, clear the processing flag
-				if !pendingToolCalls {
-					m.processingTool = false
-				}
-
-				// Update the UI
-				m.viewport.SetContent(m.renderAllMessages())
-				m.viewport.GotoBottom()
-
-				// Add the tool results to the return batch to be sent back to the model
-				cmds = append(cmds, m.sendToolResultsCmd(msg.results))
-			}
-		}
-	}
-	return m, tea.Batch(cmds...)
-}
-
-// handleHistoryMsg handles messages related to chat history loading and saving.
-func (m *Model) handleHistoryMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	switch msg := msg.(type) {
-	case historyLoadedMsg:
-		if msg.session != nil {
-			m.loadMessagesFromSession(msg.session)
-			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Loaded chat session: %s", msg.session.Title)))
-			m.viewport.SetContent(m.renderAllMessages())
-			m.viewport.GotoBottom()
-		}
-
-	case historyLoadFailedMsg:
-		m.messages = append(m.messages, formatError(fmt.Errorf("failed to load history: %w", msg.err)))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
-
-	case historySavedMsg:
-		// History saved successfully, could show a notification
-		log.Println("Chat history saved successfully")
-
-	case historySaveFailedMsg:
-		m.messages = append(m.messages, formatError(fmt.Errorf("failed to save history: %w", msg.err)))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
-	}
-	return m, tea.Batch(cmds...)
-}
-
-// handleSystemMsg handles general system messages like ticks and window size changes.
-func (m *Model) handleSystemMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	switch msg := msg.(type) {
-	case spinner.TickMsg:
-		// Handled by spinner update in the main Update loop
-
-	case tea.WindowSizeMsg:
-		// Prevent zero dimensions
-		m.width = max(msg.Width, 20)
-		m.height = max(msg.Height, 10)
-
-		// Calculate viewport dimensions
-		headerHeight := lipgloss.Height(m.headerView())
-		footerHeight := lipgloss.Height(m.footerView())
-
-		// Calculate viewport height to fill available space
-		viewportHeight := m.height - headerHeight - footerHeight - 2 // -2 for margins
-
-		// Update viewport dimensions
-		m.viewport.Width = m.width
-		m.viewport.Height = viewportHeight
-
-		// Set scrollable area with full content
-		m.viewport.SetContent(m.renderAllMessages())
-
-		// Update textarea width
-		m.textarea.SetWidth(m.width)
-
-		// Maintain scroll position when resizing
-		currPos := m.viewport.YPosition
-
-		// Additional height adjustments for optional components
-		if m.showLogMessages && len(m.logMessages) > 0 {
-			logHeight := lipgloss.Height(m.logMessagesView())
-			if viewportHeight > logHeight+5 { // Ensure minimum viewport height
-				viewportHeight -= logHeight + 1
-			}
-		}
-
-		if m.showAudioStatus && (m.isAudioProcessing || len(m.audioQueue) > 0 || m.currentAudio != nil) {
-			audioHeight := lipgloss.Height(m.audioStatusView())
-			if viewportHeight > audioHeight+5 { // Ensure minimum viewport height
-				viewportHeight -= audioHeight + 1
-			}
-		}
-
-		// Ensure viewport has minimum size
-		if viewportHeight < 10 {
-			viewportHeight = 10 // Minimum viewport height
-		}
-
-		// Update viewport with final dimensions
-		m.viewport.Height = viewportHeight
-
-		// Update content and restore scroll position
-		m.viewport.SetContent(m.renderAllMessages())
-		// Keep scroll position unless at the bottom (for better UX)
-		if m.viewport.AtBottom() || m.viewport.PastBottom() {
-			m.viewport.GotoBottom() // If we were at the bottom, stay at bottom
-		} else {
-			m.viewport.SetYOffset(currPos) // Otherwise restore position
-		}
-
-	default:
-		// Ignore unknown messages handled elsewhere or not relevant here
-	}
-	return m, tea.Batch(cmds...)
-}
-
-// Update handles incoming messages and updates the model state.
-// It acts as the main dispatcher, delegating to helper functions.
-func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var (
-		taCmd               tea.Cmd
-		vpCmd               tea.Cmd
-		spCmd               tea.Cmd
-		cmds                []tea.Cmd
-		helperCmd           tea.Cmd // Command returned by helper function
-		startPlaybackTicker bool    // Flag to start the ticker, potentially set by helpers
-	)
-
-	// --- Pre-Update Checks and Component Updates ---
-
-	// --- Pre-Update Checks and Component Updates ---
-
-	// Check if the root context is done (timeout or cancelled)
-	if m.rootCtx != nil && m.rootCtx.Err() != nil {
-		log.Printf("Root context closed: %v", m.rootCtx.Err())
-		if m.currentState != AppStateQuitting {
-			m.currentState = AppStateQuitting // Ensure state reflects quitting
-		}
-		// Let the quit check below handle tea.Quit
-	}
-
-	// Update standard components (textarea, viewport, spinner) before handling specific messages
-	// Note: KeyMsg handling might update textarea again, which is fine.
-	m.textarea, taCmd = m.textarea.Update(msg)
-	m.viewport, vpCmd = m.viewport.Update(msg)
-
-	// Update spinner only if in a state that requires it
-	//if m.currentState == AppStateConnecting || m.currentState == AppStateSending || m.currentState == AppStateReceiving || m.currentState == AppStateProcessingTool {
-	var spinnerText string
-	// switch m.currentState {
-	// case AppStateConnecting:
-	// 	spinnerText = " Connecting..."
-	// case AppStateSending:
-	// 	spinnerText = " Sending..."
-	// case AppStateReceiving:
-	// 	spinnerText = " Receiving..."
-	// case AppStateProcessingTool:
-	// 	spinnerText = " Processing tool..."
-
-	// }
-	_ = spinnerText // TODO: Use this in the spinner update
-	// TODO: wrap spinner to wrap with text
-	// Update spinner text if needed (spinner doesn't support dynamic text directly)
-	// We'll handle the text in the View function based on state.
-	m.spinner, spCmd = m.spinner.Update(msg)
-	cmds = append(cmds, spCmd)
-	cmds = append(cmds, taCmd, vpCmd) // Add textarea and viewport commands
-
-	// --- Delegate to Message Handlers ---
-	// Only process messages if not already quitting
-	if m.currentState != AppStateQuitting {
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			// Check for Ctrl+P/Ctrl+R which might set startPlaybackTicker
-			if msg.String() == "ctrl+p" || msg.String() == "ctrl+r" {
-				// Peek ahead to see if playback was triggered
-				_, triggered := m.checkPlayback(msg.String())
-				if triggered {
-					startPlaybackTicker = true
-				}
-			}
-			_, helperCmd = m.handleKeyMsg(msg)
-
-		// --- Stream Messages ---
-		case initStreamMsg, streamReadyMsg, bidiStreamReadyMsg, streamResponseMsg, bidiStreamResponseMsg, sentMsg, sendErrorMsg, streamErrorMsg, streamClosedMsg:
-			// Check streamResponseMsg for audio which might set startPlaybackTicker
-			if respMsg, ok := msg.(streamResponseMsg); ok {
-				// Check if audio data is present by checking the length of the Audio slice
-				if len(respMsg.output.Audio) > 0 && m.enableAudio && m.playerCmd != "" {
-					startPlaybackTicker = true
-				}
-			}
-			_, helperCmd = m.handleStreamMsg(msg)
-
-		// --- Tool Call Messages ---
-		case toolCallSentMsg, toolCallResultMsg:
-			_, helperCmd = m.handleToolMsg(msg)
-
-		// --- History Messages ---
-		case historyLoadedMsg, historyLoadFailedMsg, historySavedMsg, historySaveFailedMsg:
-			_, helperCmd = m.handleHistoryMsg(msg)
-
-		// --- Audio Messages ---
-		case audioPlaybackStartedMsg, audioPlaybackCompletedMsg, audioQueueUpdatedMsg, audioPlaybackErrorMsg, flushAudioBufferMsg, playbackTickMsg:
-			// Check audioPlaybackStartedMsg which might set startPlaybackTicker
-			if _, ok := msg.(audioPlaybackStartedMsg); ok {
-				startPlaybackTicker = true
-			}
-			_, helperCmd = m.handleAudioMsg(msg)
-
-		// --- Other System Messages ---
-		case spinner.TickMsg, tea.WindowSizeMsg:
-			_, helperCmd = m.handleSystemMsg(msg)
-
-		default:
-			// Ignore unknown messages or messages handled by component updates above
-		}
-	}
-
-	// Append command from the helper function
-	if helperCmd != nil {
-		cmds = append(cmds, helperCmd)
-	}
-
-	// --- Post-Update Logic ---
-
-	// Start ticker command if flagged by any handler and not already running
-	if startPlaybackTicker && !m.tickerRunning {
-		m.tickerRunning = true
-		log.Println("[UI] Starting playback ticker.")
-		cmds = append(cmds, playbackTickCmd())
-	}
-
-	// Always ensure textarea keeps focus if it's the active component
-	// This is critical for ensuring the input prompt remains visible
-	if m.focusedComponent == "input" {
-		m.textarea.Focus()
-	}
-
-	// Important: Always add the listener command back to the batch
-	// to keep listening for background updates, unless quitting.
-	if m.currentState != AppStateQuitting {
-		cmds = append(cmds, m.listenForUIUpdatesCmd())
-	}
-
-	// Check for quit state *after* handling messages and adding commands
-	if m.currentState == AppStateQuitting {
-		log.Println("Quitting state detected, returning tea.Quit")
-		// Perform final cleanup before quitting? Or rely on defer in main?
-		// m.Cleanup() // Maybe call cleanup here?
-		return m, tea.Quit
-	}
-
-	return m, tea.Batch(cmds...)
-}
-
-// Cleanup properly releases all resources
-func (m *Model) Cleanup() {
-	log.Println("Cleaning up resources")
-
-	// Cancel root context if it exists
-	if m.rootCtxCancel != nil {
-		log.Println("Canceling root context")
-		m.rootCtxCancel()
-		m.rootCtxCancel = nil
-	}
-
-	// Close streams and contexts
-	if m.stream != nil {
-		m.stream.CloseSend()
-		m.stream = nil
-	}
-	if m.bidiStream != nil {
-		m.bidiStream.CloseSend()
-		m.bidiStream = nil
-	}
-	if m.streamCtxCancel != nil {
-		m.streamCtxCancel()
-		m.streamCtxCancel = nil
-	}
-
-	// Close the audio channel and clear the queue
-	if m.audioChannel != nil {
-		log.Println("Closing audio processing channel")
-		close(m.audioChannel) // Signal processor goroutine to exit
-		m.audioChannel = nil
-		m.audioQueue = nil
-		m.currentAudio = nil
-		m.isAudioProcessing = false
-	}
-
-	// Close the UI update channel
-	if m.uiUpdateChan != nil {
-		// It's generally safer *not* to close channels that multiple goroutines
-		// might write to, unless you have robust synchronization ensuring no
-		// writes happen after the close. Let program exit handle cleanup.
-		// close(m.uiUpdateChan)
-		m.uiUpdateChan = nil // Allow GC
-	}
-
-	// Clean up audio consolidation resources
-	if m.bufferTimer != nil {
-		log.Println("Stopping audio buffer timer")
-		m.bufferTimer.Stop()
-		m.bufferTimer = nil
-	}
-	m.consolidatedAudioData = nil
-	m.bufferMessageIdx = -1
-	m.bufferStartTime = time.Time{}
-	m.lastFlushTime = time.Time{}
-	m.currentBufferWindow = initialAudioBufferingWindow
-	m.recentChunkSizes = nil
-	m.recentChunkTimes = nil
-	m.consecutiveSmallChunks = 0
-
-	// Close the API client
-	if m.client != nil && m.client.GenerativeClient != nil {
-		m.client.Close()
-	}
-
-	// Save any pending history changes
-	if m.historyEnabled && m.historyManager != nil && m.historyManager.CurrentSession != nil {
-		if err := m.historyManager.SaveSession(m.historyManager.CurrentSession); err != nil {
-			log.Printf("Error saving history during cleanup: %v", err)
-		}
-	}
-
-	log.Println("Cleanup finished.")
+// autoSendCmd returns a command that sends a test message after the configured delay
+func (m *Model) autoSendCmd() tea.Cmd {
+	return tea.Tick(m.autoSendDelay, func(t time.Time) tea.Msg {
+		return autoSendMsg{}
+	})
 }
