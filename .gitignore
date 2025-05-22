@@ -7,3 +7,5 @@ debug_audio.bin
 testdata/recordings/
 api/testdata/
 !testdata/script/
+
+**/.claude/settings.local.json

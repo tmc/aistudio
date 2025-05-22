@@ -68,11 +68,40 @@ go mod tidy
 
 # Run tests
 ```shell
+# Run regular tests
 go test ./...
+
+# Run end-to-end connectivity tests (requires API key)
+GEMINI_API_KEY=your_key go test -v -run TestE2E
 ```
 
 # Run linter/vet
 ```shell
 go vet ./...
 ```
+
+## Testing
+
+### Unit Tests
+The project includes unit tests for core functionality. Run them with:
+```shell
+go test ./...
+```
+
+### End-to-End Tests
+End-to-end tests verify connectivity with the actual Gemini API:
+
+```shell
+# Run only E2E connection tests
+GEMINI_API_KEY=your_key go test -v -run TestE2EConnection
+
+# Skip specific stability tests that take longer
+GEMINI_API_KEY=your_key go test -v -run TestE2EConnection/BinaryInitialization
+```
+
+The E2E tests include:
+- Binary initialization test (verifies connection setup)
+- Message sending test (verifies proper message exchange)
+- Connection stability test (verifies keepalive during idle periods)
+- Library connection test (verifies API client works directly)
 
