@@ -6,15 +6,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
+	"cloud.google.com/go/ai/generativelanguage/apiv1beta/generativelanguagepb"
 )
 
 // Run with: go test -v ./api -run TestE2EClientStreaming
 // To record API interactions: go test -v ./api -run TestE2EClientStreaming -grpcrecord_e2e
 // Note: Recording requires a valid GEMINI_API_KEY environment variable
+//
+// These tests verify the client's streaming functionality with both functional
+// and quality checks. They include:
+// 1. Connection establishment tests
+// 2. Message exchange tests with content verification
+// 3. Response quality checks for minimum length and relevant content
+// 4. Conversation continuity verification
+// 5. Performance timing measurements
 
 // Variable to track if we should record gRPC interactions
 var grpcRecordE2E bool
@@ -23,16 +32,9 @@ func init() {
 	flag.BoolVar(&grpcRecordE2E, "grpcrecord_e2e", false, "record gRPC requests and responses for E2E tests")
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // sendMessageToStream is a helper function that sends a message to the stream
 // It does this by closing the current stream and initializing a new one with the message
-func sendMessageToStream(ctx context.Context, client *Client, config ClientConfig, message string) (generativelanguagepb.GenerativeService_StreamGenerateContentClient, error) {
+func sendMessageToStream(ctx context.Context, client *Client, config *StreamClientConfig, message string) (generativelanguagepb.GenerativeService_StreamGenerateContentClient, error) {
 	// Create a content request with the message
 	request := &generativelanguagepb.GenerateContentRequest{
 		Model: config.ModelName,
@@ -92,6 +94,13 @@ func waitForCompleteResponse(t *testing.T, stream generativelanguagepb.Generativ
 
 // TestE2EClientStreaming is an end-to-end test for the client's streaming functionality
 // This test can run in either record mode (requires API key) or replay mode (uses recorded interactions)
+//
+// The test verifies:
+// 1. Ability to create and initialize a streaming connection
+// 2. Sending and receiving messages with content validation
+// 3. Multiple message exchange in a conversation
+// 4. Response quality metrics including content relevance
+// 5. Performance timing for basic operations
 func TestE2EClientStreaming(t *testing.T) {
 	// Skip this test if we're in record mode and no API key is available
 	apiKey := os.Getenv("GEMINI_API_KEY")
@@ -179,7 +188,7 @@ func TestE2EClientStreaming(t *testing.T) {
 	}()
 
 	// Test creating a streaming session
-	config := ClientConfig{
+	config := &StreamClientConfig{
 		ModelName:   "models/gemini-1.5-flash-latest",
 		EnableAudio: false,
 	}
@@ -204,6 +213,12 @@ func TestE2EClientStreaming(t *testing.T) {
 		t.Error("Expected non-empty text response")
 	}
 	t.Logf("Initial response: %s", output.Text)
+
+	// Verify response quality metrics
+	t.Log("Step 2.5: Checking response quality metrics")
+	if len(output.Text) < 10 {
+		t.Error("Response text is too short, expected at least 10 characters")
+	}
 
 	// Close the initial stream before sending the first follow-up message
 	if err := stream.CloseSend(); err != nil {
@@ -233,6 +248,24 @@ func TestE2EClientStreaming(t *testing.T) {
 	}
 	t.Logf("First follow-up response received, length: %d characters", len(firstFollowupOutput.Text))
 
+	// Check for response quality and content relevance
+	if len(firstFollowupOutput.Text) < 100 {
+		t.Errorf("First follow-up response too short: %d chars, expected at least 100", len(firstFollowupOutput.Text))
+	}
+
+	// Verify the response contains relevant keywords to the AI query
+	aiKeywords := []string{"artificial", "intelligence", "AI", "learning", "machine"}
+	hasRelevantContent := false
+	for _, keyword := range aiKeywords {
+		if strings.Contains(strings.ToLower(firstFollowupOutput.Text), strings.ToLower(keyword)) {
+			hasRelevantContent = true
+			break
+		}
+	}
+	if !hasRelevantContent {
+		t.Error("First follow-up response does not contain expected AI-related keywords")
+	}
+
 	// Close the stream before sending the second follow-up message
 	if err := stream.CloseSend(); err != nil {
 		t.Logf("Error closing stream after first follow-up (can be ignored): %v", err)
@@ -259,11 +292,84 @@ func TestE2EClientStreaming(t *testing.T) {
 	}
 	t.Logf("Second follow-up response received, length: %d characters", len(secondFollowupOutput.Text))
 
+	// Check for response quality and ethics-related content
+	if len(secondFollowupOutput.Text) < 100 {
+		t.Errorf("Second follow-up response too short: %d chars, expected at least 100", len(secondFollowupOutput.Text))
+	}
+
+	// Verify the response contains ethics-related keywords
+	ethicsKeywords := []string{"ethics", "ethical", "concern", "bias", "privacy", "accountability", "transparency"}
+	hasEthicsContent := false
+	for _, keyword := range ethicsKeywords {
+		if strings.Contains(strings.ToLower(secondFollowupOutput.Text), strings.ToLower(keyword)) {
+			hasEthicsContent = true
+			break
+		}
+	}
+	if !hasEthicsContent {
+		t.Error("Second follow-up response does not contain expected ethics-related keywords")
+	}
+
+	// Test for conversation continuity - check if response references previous context
+	continuityKeywords := []string{"previous", "earlier", "mentioned", "discussed", "as we talked about"}
+	hasContinuityMarkers := false
+	for _, keyword := range continuityKeywords {
+		if strings.Contains(strings.ToLower(secondFollowupOutput.Text), strings.ToLower(keyword)) {
+			hasContinuityMarkers = true
+			break
+		}
+	}
+	t.Logf("Conversation continuity markers present: %v", hasContinuityMarkers)
+
 	// Close the final stream
 	if err := stream.CloseSend(); err != nil {
 		t.Logf("Error closing final stream (can be ignored): %v", err)
 	}
 
+	// Add a timing measurement
+	t.Log("Measuring end-to-end response timing metrics...")
+
+	// Time a simple query to measure baseline performance
+	startTime := time.Now()
+	quickQueryMsg := "What is 2+2?"
+
+	stream, err = sendMessageToStream(ctx, client, config, quickQueryMsg)
+	if err != nil {
+		t.Fatalf("Failed to send timing test message: %v", err)
+	}
+
+	quickOutput, err := waitForCompleteResponse(t, stream)
+	if err != nil {
+		t.Fatalf("Error receiving response to timing test: %v", err)
+	}
+
+	responseTime := time.Since(startTime)
+	t.Logf("Simple query response time: %v", responseTime)
+
+	// Check if the response contains "4" (answer to 2+2)
+	if !strings.Contains(quickOutput.Text, "4") {
+		t.Logf("Warning: Simple math query response doesn't contain expected result '4': %s",
+			truncateString(quickOutput.Text, 50))
+	}
+
+	// Apply reasonable timing expectations for tests
+	if responseTime > 10*time.Second {
+		t.Errorf("Response time too slow: %v, expected < 10s", responseTime)
+	}
+
+	// Close the timing test stream
+	if err := stream.CloseSend(); err != nil {
+		t.Logf("Error closing timing test stream (can be ignored): %v", err)
+	}
+
 	// Test completed successfully
 	t.Log("Full conversation flow test completed successfully")
+}
+
+// Helper function to truncate strings for logging
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

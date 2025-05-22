@@ -113,8 +113,8 @@ func TestClientStreamContent(t *testing.T) {
 	}
 
 	// Try to start a streaming session
-	config := ClientConfig{
-		ModelName:   "models/gemini-1.5-flash-latest",
+	config := &StreamClientConfig{
+		ModelName:   "models/gemini-2.0-flash-live-001",
 		EnableAudio: false,
 	}
 
