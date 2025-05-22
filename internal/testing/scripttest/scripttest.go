@@ -2,21 +2,24 @@
 package scripttest
 
 import (
+	"errors"
 	"flag"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"errors"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"testing"
 
-	"github.com/tmc/aistudio/internal/httprr"
 	"strings"
+
+	"github.com/tmc/aistudio/internal/httprr"
 )
 
 // findProjectRoot searches upwards from a given directory for a go.mod file.
+// Deprecated: This function is not currently used in the codebase outside of tests.
+// It is kept for potential future use in test functionality.
 func findProjectRoot(startDir string) (string, error) {
 	dir := startDir
 	for {
@@ -36,6 +39,8 @@ func findProjectRoot(startDir string) (string, error) {
 
 // Run runs a single script test file for aistudio, adding HTTP recording and replay capability.
 // It executes the script specified by scriptPath.
+// Deprecated: This function is not currently used in the codebase outside of tests.
+// It is kept for test functionality for future use.
 func Run(t *testing.T, scriptPath string, record ...bool) {
 	log.Printf("Starting scripttest.Run for script: %s", scriptPath)
 

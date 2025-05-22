@@ -19,7 +19,7 @@ func init() {
 		atomic.StoreInt32(&audioTraceEnabled, 1)
 		log.Println("--- Detailed audio pipeline tracing enabled (AISTUDIO_AUDIO_TRACE=1) ---")
 	}
-	
+
 	// Verbose logging flag
 	if os.Getenv("AISTUDIO_VERBOSE") == "1" {
 		atomic.StoreInt32(&verboseLogEnabled, 1)
@@ -30,11 +30,6 @@ func init() {
 // IsAudioTraceEnabled checks if detailed audio tracing is enabled via environment variable.
 func IsAudioTraceEnabled() bool {
 	return atomic.LoadInt32(&audioTraceEnabled) == 1
-}
-
-// IsVerboseLoggingEnabled checks if verbose logging is enabled via environment variable.
-func IsVerboseLoggingEnabled() bool {
-	return atomic.LoadInt32(&verboseLogEnabled) == 1
 }
 
 // CreateWavHeader creates a simple WAV header for the given parameters.

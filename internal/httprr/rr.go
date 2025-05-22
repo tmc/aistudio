@@ -29,6 +29,8 @@ import (
 
 var record = new(string)
 
+// Deprecated: This init function is not currently used in the codebase.
+// It is kept for potential future use in testing.
 func init() {
 	if testing.Testing() {
 		record = flag.String("httprecord", "", "re-record traces for files matching `regexp`")
@@ -63,6 +65,9 @@ type RecordReplay struct {
 // the unmodified original request is sent to the actual server in recording mode.
 // A scrub function can assume that if req.Body is not nil, then it has type [*Body].
 //
+// Deprecated: This method is not currently used in the codebase outside of tests.
+// It is kept for HTTP record/replay testing functionality.
+//
 // Calling ScrubReq adds to the list of registered request scrubbing functions;
 // it does not replace those registered by earlier calls.
 func (rr *RecordReplay) ScrubReq(scrubs ...func(req *http.Request) error) {
@@ -83,17 +88,25 @@ func (rr *RecordReplay) ScrubReq(scrubs ...func(req *http.Request) error) {
 // [http.ReadResponse]. This function can set [http.Response].Close to true even
 // when the original response had it false. See code in go/src/net/http.Response.Write
 // and go/src/net/http.Write for more info.
+//
+// Deprecated: This method is not currently used in the codebase outside of tests.
+// It is kept for HTTP record/replay testing functionality.
 func (rr *RecordReplay) ScrubResp(scrubs ...func(*bytes.Buffer) error) {
 	rr.respScrub = append(rr.respScrub, scrubs...)
 }
 
 // Recording reports whether the rr is in recording mode.
+// Deprecated: This method is not currently used in the codebase outside of tests.
+// It is kept for HTTP record/replay testing functionality.
 func (rr *RecordReplay) Recording() bool {
 	return rr.record != nil
 }
 
 // Open opens a new record/replay log in the named file and
 // returns a [RecordReplay] backed by that file.
+//
+// Deprecated: This function is not currently used in the codebase outside of tests.
+// It is kept for HTTP record/replay testing functionality.
 //
 // By default Open expects the file to exist and contain a
 // previously-recorded log of (request, response) pairs,

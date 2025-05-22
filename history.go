@@ -159,22 +159,6 @@ func (hm *HistoryManager) AddMessage(message Message) {
 	hm.CurrentSession.UpdatedAt = time.Now()
 }
 
-// loadSessionCmd returns a command to load a session in the background
-func (m *Model) loadSessionCmd(filePath string) tea.Cmd {
-	return func() tea.Msg {
-		if m.historyManager == nil {
-			return historyLoadFailedMsg{err: fmt.Errorf("history manager not initialized")}
-		}
-
-		session, err := m.historyManager.LoadSessionFromFile(filePath)
-		if err != nil {
-			return historyLoadFailedMsg{err: err}
-		}
-
-		return historyLoadedMsg{session: session}
-	}
-}
-
 // saveSessionCmd returns a command to save the current session
 func (m *Model) saveSessionCmd() tea.Cmd {
 	return func() tea.Msg {
