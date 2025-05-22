@@ -19,14 +19,14 @@ type AfplayPlayer struct {
 	config Config
 }
 
-// NewAfplayPlayer creates a new AfplayPlayer instance.
-func NewAfplayPlayer(config Config) (*AfplayPlayer, error) {
-	// Check if afplay command exists
-	if _, err := exec.LookPath("afplay"); err != nil {
-		return nil, fmt.Errorf("afplay command not found in PATH: %w", err)
+// NewAfplayPlayer creates a new AfplayPlayer with the given configuration.
+func NewAfplayPlayer(config Config) *AfplayPlayer {
+	if config.SampleRate == 0 {
+		config = DefaultConfig
 	}
-	log.Println("[AfplayPlayer] Initialized")
-	return &AfplayPlayer{config: config}, nil
+	return &AfplayPlayer{
+		config: config,
+	}
 }
 
 // Play implements the Player interface.
@@ -38,10 +38,14 @@ func (p *AfplayPlayer) Play(ctx context.Context, audioData []byte) error {
 	startTime := time.Now()
 	chunkSize := len(audioData)
 
+	// Always log for debugging
+	log.Printf("[AfplayPlayer CRITICAL] Starting playback of %d bytes with config=%+v", chunkSize, p.config)
+
 	// 1. Create Temp File
 	fileStartTime := time.Now()
 	tmpFile, err := os.CreateTemp("", "aistudio-afplay-*.wav")
 	if err != nil {
+		log.Printf("[AfplayPlayer CRITICAL] Failed to create temp file: %v", err)
 		return fmt.Errorf("afplay failed to create temp file: %w", err)
 	}
 	tempFilePath := tmpFile.Name()
@@ -61,8 +65,10 @@ func (p *AfplayPlayer) Play(ctx context.Context, audioData []byte) error {
 	errFlush := bufWriter.Flush()
 	errClose := tmpFile.Close() // Close file before playing
 
+	log.Printf("[AfplayPlayer CRITICAL] Created temp file at: %s", tempFilePath)
+
 	if err = errors.Join(errHead, errData, errFlush, errClose); err != nil {
-		log.Printf("[AfplayPlayer ERROR] Failed writing temp file %s: %v", tempFilePath, err)
+		log.Printf("[AfplayPlayer CRITICAL] Failed writing temp file %s: %v", tempFilePath, err)
 		return fmt.Errorf("afplay failed writing temp file %s: %w", tempFilePath, err)
 	}
 	fileWriteDuration := time.Since(fileStartTime)
@@ -74,9 +80,8 @@ func (p *AfplayPlayer) Play(ctx context.Context, audioData []byte) error {
 	cmd.Stderr = &stderr
 	playStartTime := time.Now()
 
-	if helpers.IsAudioTraceEnabled() {
-		log.Printf("[AfplayPlayer] Executing: afplay -q 1 %s (Size: %d bytes, FileWrite: %v)", tempFilePath, chunkSize, fileWriteDuration)
-	}
+	// Always log command execution for debugging
+	log.Printf("[AfplayPlayer CRITICAL] Executing: afplay -q 1 %s (Size: %d bytes, FileWrite: %v)", tempFilePath, chunkSize, fileWriteDuration)
 
 	// Run the command and wait for completion or context cancellation
 	err = cmd.Run()
@@ -87,20 +92,19 @@ func (p *AfplayPlayer) Play(ctx context.Context, audioData []byte) error {
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Err() == context.Canceled {
-			log.Printf("[AfplayPlayer] Playback cancelled via context for %s after %v (PlayDuration: %v)", tempFilePath, totalDuration, playDuration)
+			log.Printf("[AfplayPlayer CRITICAL] Playback cancelled via context for %s after %v (PlayDuration: %v)", tempFilePath, totalDuration, playDuration)
 			return ctx.Err() // Return context error
 		}
 		// Log other errors
 		errMsg := stderr.String()
-		log.Printf("[AfplayPlayer ERROR] Playback failed for %s: %v (stderr: %s). PlayDuration: %v, TotalDuration: %v",
+		log.Printf("[AfplayPlayer CRITICAL] Playback failed for %s: %v (stderr: %s). PlayDuration: %v, TotalDuration: %v",
 			tempFilePath, err, errMsg, playDuration, totalDuration)
 		return fmt.Errorf("afplay execution failed: %w (stderr: %s)", err, errMsg)
 	}
 
-	if helpers.IsAudioTraceEnabled() {
-		log.Printf("[AfplayPlayer] Playback completed OK for %s. Size=%d, PlayDuration=%v, FileWrite=%v, Total=%v",
-			tempFilePath, chunkSize, playDuration, fileWriteDuration, totalDuration)
-	}
+	// Always log successful playback for debugging
+	log.Printf("[AfplayPlayer CRITICAL] Playback completed OK for %s. Size=%d, PlayDuration=%v, FileWrite=%v, Total=%v",
+		tempFilePath, chunkSize, playDuration, fileWriteDuration, totalDuration)
 
 	return nil
 }

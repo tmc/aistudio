@@ -24,6 +24,10 @@ type StdinPlayer struct {
 
 // NewStdinPlayer creates a new StdinPlayer instance.
 // The command string should include a placeholder like '-' for stdin.
+// Deprecated: This implementation is not currently used in the codebase.
+// It is kept for compatibility with the Player interface and potential future use.
+// The application has moved to a different audio playback approach using the Model in audioplayer.go,
+// but these interface implementations are preserved for potential reuse in future audio backends.
 func NewStdinPlayer(command string, config Config) (*StdinPlayer, error) {
 	if command == "" {
 		return nil, errors.New("audio player command cannot be empty")
@@ -47,7 +51,11 @@ func NewStdinPlayer(command string, config Config) (*StdinPlayer, error) {
 	}, nil
 }
 
-// Play implements the Player interface.
+// Play implements the Player interface by writing to the command's stdin.
+// Deprecated: This implementation is not currently used in the codebase.
+// It is kept for compatibility with the Player interface and potential future use.
+// The application has moved to a different audio playback approach using the Model in audioplayer.go,
+// but these interface implementations are preserved for potential reuse in future audio backends.
 func (p *StdinPlayer) Play(ctx context.Context, audioData []byte) error {
 	if len(audioData) == 0 {
 		return errors.New("cannot play empty audio data")
@@ -111,12 +119,20 @@ func (p *StdinPlayer) Play(ctx context.Context, audioData []byte) error {
 }
 
 // Cleanup implements the Player interface. No-op for StdinPlayer.
+// Deprecated: This implementation is not currently used in the codebase.
+// It is kept for compatibility with the Player interface and potential future use.
+// The application has moved to a different audio playback approach using the Model in audioplayer.go,
+// but these interface implementations are preserved for potential reuse in future audio backends.
 func (p *StdinPlayer) Cleanup() error {
 	return nil
 }
 
 // RequiresWAVHeader checks if the player likely needs a WAV header.
 // Currently heuristics based on common player names.
+// Deprecated: This implementation is not currently used in the codebase.
+// It is kept for compatibility with the Player interface and potential future use.
+// The application has moved to a different audio playback approach using the Model in audioplayer.go,
+// but these interface implementations are preserved for potential reuse in future audio backends.
 func (p *StdinPlayer) RequiresWAVHeader() bool {
 	// ffplay and ffmpeg generally handle raw PCM better if format flags are correct,
 	// but adding a WAV header is often more robust if flags are uncertain or missing.
@@ -131,6 +147,10 @@ func (p *StdinPlayer) RequiresWAVHeader() bool {
 }
 
 // EstimatedLatency provides a rough estimate. Stdin players might have some startup overhead.
+// Deprecated: This implementation is not currently used in the codebase.
+// It is kept for compatibility with the Player interface and potential future use.
+// The application has moved to a different audio playback approach using the Model in audioplayer.go,
+// but these interface implementations are preserved for potential reuse in future audio backends.
 func (p *StdinPlayer) EstimatedLatency() time.Duration {
 	// Estimate based on typical process startup and buffering
 	return 50 * time.Millisecond

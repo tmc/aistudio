@@ -3,6 +3,7 @@ package aistudio
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea" // Keep import for tea.Msg types
+	"github.com/tmc/aistudio/audioplayer"
 	"github.com/tmc/aistudio/internal/helpers"
 )
 
@@ -47,6 +49,18 @@ func (m *Model) startAudioProcessor() {
 // (either temp file for afplay or stdin pipe for others).
 func (m *Model) startFIFOAudioProcessor() {
 	log.Println("Starting FIFO audio processor with lookahead buffering")
+
+	// Initialize audio player if needed
+	if m.playerCmd == "afplay" && m.afplayPlayer == nil {
+		log.Println("Creating new AfplayPlayer instance with audioSampleRate:", audioSampleRate)
+		m.afplayPlayer = audioplayer.NewAfplayPlayer(audioplayer.Config{
+			SampleRate:    audioSampleRate,
+			Channels:      1,
+			BitsPerSample: 16,
+			Format:        "s16le",
+		})
+		log.Println("Successfully initialized AfplayPlayer:", m.afplayPlayer != nil)
+	}
 
 	// Channel to ensure sequential playback
 	audioCompleteCh := make(chan struct{}, 1)
@@ -186,6 +200,17 @@ func (m *Model) startFIFOAudioProcessor() {
 // startDirectAudioProcessor processes audio chunks directly (less common mode)
 func (m *Model) startDirectAudioProcessor() {
 	log.Println("Starting Direct audio processor with lookahead buffering")
+
+	// Initialize audio player if needed
+	if m.playerCmd == "afplay" && m.afplayPlayer == nil {
+		m.afplayPlayer = audioplayer.NewAfplayPlayer(audioplayer.Config{
+			SampleRate:    audioSampleRate,
+			Channels:      1,
+			BitsPerSample: 16,
+			Format:        "s16le",
+		})
+		log.Println("Initialized AfplayPlayer for direct processing")
+	}
 
 	audioCompleteCh := make(chan struct{}, 1)
 	audioCompleteCh <- struct{}{}
@@ -327,6 +352,33 @@ func (m *Model) playAudioChunkFIFO(c AudioChunk) error {
 	m.currentAudio = &currentChunk // Direct update - primarily for UI access
 	m.isAudioProcessing = true     // Direct update - reflects player state
 
+	// Use AfplayPlayer if available
+	if m.playerCmd == "afplay" && m.afplayPlayer != nil {
+		// Create a context that can be cancelled if needed
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Add debug logging
+		log.Printf("[AUDIO_PIPE] CRITICAL: Using AfplayPlayer for playback, player=%v, data size=%d bytes", m.afplayPlayer, chunkSize)
+
+		// Force detailed logging
+		log.Printf("[AUDIO_DEBUG] Creating WAV header with SampleRate=%d, Channels=1, BitsPerSample=16", audioSampleRate)
+		log.Printf("[AUDIO_DEBUG] Using temp file for afplay audio playback")
+
+		// Use the AfplayPlayer implementation
+		err := m.afplayPlayer.Play(ctx, c.Data)
+		if err != nil {
+			log.Printf("[AUDIO_PIPE] CRITICAL: AfplayPlayer error: %v", err)
+			// Fall back to direct afplay method
+			log.Printf("[AUDIO_PIPE] Falling back to direct afplay method")
+			return m.playWithAfplayDirect(c.Data)
+		}
+
+		log.Printf("[AUDIO_PIPE] CRITICAL: AfplayPlayer playback completed successfully")
+		return nil
+	}
+
+	// --- Use legacy fallback method if AfplayPlayer is not available ---
 	var cmd *exec.Cmd
 	var err error
 	var stderr bytes.Buffer
@@ -449,6 +501,43 @@ func (m *Model) playAudioChunkDirect(c AudioChunk) error {
 	m.currentAudio = &currentChunk
 	m.isAudioProcessing = true
 
+	// Use AfplayPlayer if available (more efficient implementation)
+	if m.playerCmd == "afplay" && m.afplayPlayer != nil {
+		// Create a context that can be cancelled if needed
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Use the AfplayPlayer implementation
+		if helpers.IsAudioTraceEnabled() {
+			log.Printf("[AUDIO_PIPE] Using AfplayPlayer for direct playback (%d bytes)", chunkSize)
+		}
+
+		err := m.afplayPlayer.Play(ctx, c.Data)
+		if err != nil {
+			log.Printf("[AUDIO_PIPE] AfplayPlayer direct error: %v", err)
+			return fmt.Errorf("afplay player direct error: %w", err)
+		}
+
+		// Log completion
+		endTime := time.Now()
+		duration := endTime.Sub(startTime)
+
+		if helpers.IsAudioTraceEnabled() {
+			log.Printf("[AUDIO_PIPE] AfplayPlayer direct completed: Size=%d bytes, Msg #%d. Duration: %s.",
+				chunkSize, c.MessageIndex, duration)
+		}
+
+		// Update model state
+		m.isAudioProcessing = false
+		if m.currentAudio != nil && bytes.Equal(m.currentAudio.Data, c.Data) {
+			m.currentAudio.IsProcessing = false
+			m.currentAudio.IsComplete = true
+		}
+
+		return nil
+	}
+
+	// --- Legacy fallback implementation for other players ---
 	var err error
 	var stderr bytes.Buffer
 
@@ -603,31 +692,26 @@ func (m *Model) playAudioCmd(audioData []byte, text ...string) tea.Cmd {
 	}
 }
 
-// playWithAfplay handles audio playback using macOS afplay by creating a temp file.
-// Returns a tea.Cmd for use in the tea framework.
-func (m *Model) playWithAfplay(audioData []byte) tea.Cmd {
-	return func() tea.Msg {
-		err := m.playWithAfplayDirect(audioData) // Call the direct function
-		if err != nil {
-			// Send error message back to UI loop via channel
-			m.uiUpdateChan <- audioPlaybackErrorMsg{err: err}
-		}
-		// Let the processor loop send the completion message
-		return nil
-	}
-}
-
 // playWithAfplayDirect executes afplay directly, blocking until completion.
 // Used internally by the audio processor goroutine or playWithAfplay command.
 // Includes detailed logging. Returns error on failure.
 func (m *Model) playWithAfplayDirect(audioData []byte) error {
+	// Try to use the AfplayPlayer if available
+	if m.afplayPlayer != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		return m.afplayPlayer.Play(ctx, audioData)
+	}
+
+	// Legacy fallback implementation
 	audioSize := len(audioData)
 	startTime := time.Now() // Overall start time for this operation
 	estimatedDuration := float64(audioSize) / 48000.0
 
-	if helpers.IsAudioTraceEnabled() {
-		log.Printf("[AFPLAY] Executing: Size=%d bytes (~%.2fs)", audioSize, estimatedDuration)
-	}
+	// Force logging for debugging
+	log.Printf("[AFPLAY] CRITICAL: Direct afplay execution for Size=%d bytes (~%.2fs)", audioSize, estimatedDuration)
+	log.Printf("[AFPLAY] CRITICAL: This is the legacy fallback implementation using temp files")
 
 	// 1. Create Temp File - include message index in filename if available
 	fileStartTime := time.Now()
@@ -675,9 +759,17 @@ func (m *Model) playWithAfplayDirect(audioData []byte) error {
 	if helpers.IsAudioTraceEnabled() {
 		log.Printf("[AFPLAY] Starting playback command for %s (FileWrite: %v)", tempFilePath, fileWriteDuration)
 	}
+	log.Printf("[AFPLAY] CRITICAL: Executing command: afplay -q 1 %s", tempFilePath)
 	err = cmd.Run() // Blocks until playback is complete
 	playDuration := time.Since(playStartTime)
 	totalDuration := time.Since(startTime)
+
+	// Critical logging for debugging
+	if err != nil {
+		log.Printf("[AFPLAY] CRITICAL: Command FAILED: %v", err)
+	} else {
+		log.Printf("[AFPLAY] CRITICAL: Command executed SUCCESSFULLY")
+	}
 
 	// 4. Log Results & Return Error Status
 	if err != nil {
