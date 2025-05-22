@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
-	"cloud.google.com/go/ai/generativelanguage/apiv1alpha/generativelanguagepb"
+	"cloud.google.com/go/ai/generativelanguage/apiv1beta/generativelanguagepb"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tmc/aistudio/api"
 )
@@ -42,7 +44,7 @@ type streamReadyMsg struct {
 }
 
 type bidiStreamReadyMsg struct {
-	stream generativelanguagepb.GenerativeService_BidiGenerateContentClient
+	stream generativelanguagepb.GenerativeService_StreamGenerateContentClient
 }
 
 type bidiStreamResponseMsg struct {
@@ -79,33 +81,50 @@ func formatExecutableCodeResultMessage(execResult *generativelanguagepb.CodeExec
 // initStreamCmd returns a command that initializes a stream.
 func (m *Model) initStreamCmd() tea.Cmd {
 	return func() tea.Msg {
-		log.Println("initStreamCmd")
+		log.Println("initStreamCmd: Starting connection attempt")
+
 		// Reuse the root context if it exists, otherwise create a new one
 		if m.rootCtx == nil {
 			log.Println("Warning: Root context is nil, creating new background context")
 			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
 		}
 
-		// Only cancel existing stream context if it's a retry attempt
-		if m.streamCtxCancel != nil && m.streamRetryAttempt > 0 {
-			log.Println("Canceling previous stream context")
+		// Always create a fresh stream context for each connection attempt
+		// This ensures we don't reuse potentially problematic contexts
+		if m.streamCtxCancel != nil {
+			log.Println("[DEBUG] Canceling previous stream context")
 			m.streamCtxCancel()
 			m.streamCtx = nil
 			m.streamCtxCancel = nil
-			// Small delay to ensure context is properly canceled
+			// Give some time for the context to fully cancel and clean up
 			time.Sleep(100 * time.Millisecond)
 		}
 
-		// Create a new context with cancellation from the root context
-		if m.streamCtx == nil {
-			m.streamCtx, m.streamCtxCancel = context.WithCancel(m.rootCtx)
+		// Create a new context with timeout to prevent hanging connections
+		connectionTimeout := DefaultConnectionTimeout
+		if timeoutStr := os.Getenv(EnvConnectionTimeout); timeoutStr != "" {
+			if parsedTimeout, err := strconv.Atoi(timeoutStr); err == nil {
+				connectionTimeout = time.Duration(parsedTimeout) * time.Second
+				log.Printf("[DEBUG] Using custom connection timeout: %v", connectionTimeout)
+			}
 		}
 
-		clientConfig := api.ClientConfig{
+		m.streamCtx, m.streamCtxCancel = context.WithTimeout(m.rootCtx, connectionTimeout)
+		log.Printf("[DEBUG] Created stream context with timeout: %v", connectionTimeout)
+
+		// Initialize the client configuration
+		clientConfig := api.StreamClientConfig{
 			ModelName:    m.modelName,
-			EnableAudio:  m.enableAudio,  // Pass audio preference
-			VoiceName:    m.voiceName,    // Pass voice name
-			SystemPrompt: m.systemPrompt, // Pass system prompt
+			EnableAudio:  m.enableAudio,
+			VoiceName:    m.voiceName,
+			SystemPrompt: m.systemPrompt,
+			// Add generation parameters
+			Temperature:     m.temperature,
+			TopP:            m.topP,
+			TopK:            m.topK,
+			MaxOutputTokens: m.maxOutputTokens,
+			// Feature flags
+			EnableWebSocket: m.enableWebSocket,
 		}
 
 		if m.enableTools && m.toolManager != nil {
@@ -120,7 +139,6 @@ func (m *Model) initStreamCmd() tea.Cmd {
 			for name, registeredTool := range m.toolManager.RegisteredTools {
 				if registeredTool.IsAvailable {
 					log.Printf("Adding tool definition for API: %s", name)
-					// Make a copy to ensure we have a stable pointer
 					defCopy := registeredTool.ToolDefinition
 					apiToolDefs = append(apiToolDefs, &defCopy)
 				}
@@ -128,40 +146,99 @@ func (m *Model) initStreamCmd() tea.Cmd {
 			clientConfig.ToolDefinitions = m.toolManager.RegisteredToolDefs[:]
 		}
 
-		if err := m.client.InitClient(m.streamCtx); err != nil {
-			log.Printf("Client Init Error: %v", err)
-			return streamErrorMsg{err: fmt.Errorf("client init failed: %w", err)}
+		// Add feature flags
+		clientConfig.EnableWebSearch = m.enableWebSearch // Grounding
+		clientConfig.EnableCodeExecution = m.enableCodeExecution
+		clientConfig.DisplayTokenCounts = m.displayTokenCounts
+		clientConfig.ResponseMimeType = m.responseMimeType
+		clientConfig.ResponseSchemaFile = m.responseSchemaFile
+
+		// Initialize the stream
+		start := time.Now()
+		log.Printf("[DEBUG] Initializing StreamGenerateContent for model: %s with API key (%d chars)",
+			m.modelName, len(m.apiKey))
+		
+		// Log connection debugging info if enabled
+		if os.Getenv(EnvDebugConnection) == "true" {
+			log.Printf("[DEBUG] Backend: %s, Project: %s, Location: %s", m.backend.String(), m.projectID, m.location)
+			log.Printf("[DEBUG] WebSocket enabled: %v, Audio enabled: %v", m.enableWebSocket, m.enableAudio)
 		}
 
-		if m.useBidi {
-			// Use BidiGenerateContent for true bidirectional streaming
-			bidiStream, err := m.client.InitBidiStream(m.streamCtx, clientConfig)
-			if err != nil {
-				log.Printf("Bidi Stream Init Error: %v", err)
-				return streamErrorMsg{err: fmt.Errorf("bidi connection failed: %w", err)}
-			}
-			log.Println("Bidirectional stream established successfully")
-			return bidiStreamReadyMsg{stream: bidiStream}
-		} else {
-			// Use StreamGenerateContent for one-way streaming
-			stream, err := m.client.InitStreamGenerateContent(m.streamCtx, clientConfig)
-			if err != nil {
-				log.Printf("Stream Init Error: %v", err)
-				return streamErrorMsg{err: fmt.Errorf("connection failed: %w", err)}
-			}
-			log.Println("One-way stream established successfully")
-			return streamReadyMsg{stream: stream}
+		// Ensure client is initialized
+		if m.client == nil {
+			m.client = &api.Client{}
 		}
+
+		// Set API authentication and service selection
+		m.client.APIKey = m.apiKey
+		if m.backend == BackendVertexAI {
+			m.client.Backend = api.BackendVertexAI
+			m.client.ProjectID = m.projectID
+			m.client.Location = m.location
+		} else if m.backend == BackendGrok {
+			m.client.Backend = api.BackendGrok
+		} else {
+			m.client.Backend = api.BackendGeminiAPI
+		}
+
+		// Initialize client with timeout monitoring
+		initStart := time.Now()
+		err := m.client.InitClient(m.streamCtx)
+		if err != nil {
+			elapsed := time.Since(initStart)
+			log.Printf("[ERROR] Client initialization failed after %v: %v", elapsed, err)
+			// Check if it was a timeout
+			if m.streamCtx.Err() == context.DeadlineExceeded {
+				log.Printf("[ERROR] Client initialization timed out - this indicates network connectivity issues")
+			}
+			return initErrorMsg{err: fmt.Errorf("client init failed: %w", err)}
+		}
+		initElapsed := time.Since(initStart)
+		log.Printf("[DEBUG] Client initialized successfully in %v", initElapsed)
+
+		// Initialize client stream with timeout monitoring
+		streamStart := time.Now()
+		stream, err := m.client.InitBidiStream(m.streamCtx, &clientConfig)
+		if err != nil {
+			streamElapsed := time.Since(streamStart)
+			log.Printf("[ERROR] Stream initialization failed after %v: %v", streamElapsed, err)
+			// Check if it was a timeout
+			if m.streamCtx.Err() == context.DeadlineExceeded {
+				log.Printf("[ERROR] Stream initialization timed out - this indicates gRPC/WebSocket connectivity issues")
+			}
+			return initErrorMsg{err: fmt.Errorf("stream init failed: %w", err)}
+		}
+
+		streamElapsed := time.Since(streamStart)
+		totalElapsed := time.Since(start)
+		log.Printf("[DEBUG] Stream initialized successfully in %v (total: %v)", streamElapsed, totalElapsed)
+		m.bidiStream = stream // Store the connection
+
+		// Start connection health monitoring if debug is enabled
+		if os.Getenv(EnvDebugConnection) == "true" {
+			go m.monitorConnection()
+		}
+
+		// Start receiving from the stream
+		return initClientCompleteMsg{}
 	}
 }
 
 // receiveStreamCmd returns a command that receives messages from a stream.
 func (m *Model) receiveStreamCmd() tea.Cmd {
 	return func() tea.Msg {
+		// Double-check we have a valid stream before attempting to receive
 		if m.stream == nil {
 			log.Println("receiveStreamCmd: Stream is nil")
 			return streamClosedMsg{}
 		}
+
+		// If the stream context has been canceled, don't attempt to receive
+		if m.streamCtx == nil || m.streamCtx.Err() != nil {
+			log.Printf("Stream context canceled or nil before receiving, aborting receive")
+			return streamClosedMsg{}
+		}
+
 		resp, err := m.stream.Recv()
 		if err != nil {
 			errStr := err.Error()
@@ -179,7 +256,7 @@ func (m *Model) receiveStreamCmd() tea.Cmd {
 	}
 }
 
-// receiveBidiStreamCmd returns a command that receives messages from a bidirectional stream.
+// receiveBidiStreamCmd returns a command that receives messages from a stream.
 func (m *Model) receiveBidiStreamCmd() tea.Cmd {
 	return func() tea.Msg {
 		// Double-check we have a valid stream and context before attempting to receive
@@ -212,14 +289,14 @@ func (m *Model) receiveBidiStreamCmd() tea.Cmd {
 				return streamClosedMsg{}
 			}
 			log.Printf("Bidi Stream Recv Error: %v", err)
-			return streamErrorMsg{err: fmt.Errorf("bidirectional receive failed: %w", err)}
+			return streamErrorMsg{err: fmt.Errorf("stream receive failed: %w", err)}
 		}
 
-		output := api.ExtractBidiOutput(resp)
+		output := api.ExtractOutput(resp)
 
 		// Check if there's a function call in the output that needs to be processed
 		if output.FunctionCall != nil {
-			log.Printf("Detected function call in bidi response: %s", output.FunctionCall.Name)
+			log.Printf("Detected function call in stream response: %s", output.FunctionCall.Name)
 		}
 
 		// Log message received for debugging
@@ -234,6 +311,11 @@ func (m *Model) receiveBidiStreamCmd() tea.Cmd {
 // sendToStreamCmd returns a command that sends a message to a stream.
 func (m *Model) sendToStreamCmd(text string) tea.Cmd {
 	return func() tea.Msg {
+		// Handle Grok API differently since it uses HTTP streaming
+		if m.backend == BackendGrok {
+			return m.sendToGrokStreamCmd(text)()
+		}
+
 		// Since we're using StreamGenerateContent, we can't send data after the stream is created
 		// Instead, we'll need to close the current stream and create a new one with the user's message
 
@@ -314,25 +396,213 @@ func (m *Model) sendToStreamCmd(text string) tea.Cmd {
 	}
 }
 
-// sendToBidiStreamCmd returns a command that sends a message to a bidirectional stream.
-func (m *Model) sendToBidiStreamCmd(text string) tea.Cmd {
-	log.Printf("sendToBidiStreamCmd: Sending message to Bidi stream: %s", text)
+// sendToGrokStreamCmd returns a command that sends a message to Grok API stream.
+func (m *Model) sendToGrokStreamCmd(text string) tea.Cmd {
 	return func() tea.Msg {
-		if m.bidiStream == nil {
-			log.Println("sendToBidiStreamCmd: Bidi stream is nil, cannot send message")
-			return sendErrorMsg{err: errors.New("bidirectional stream not initialized")}
-		}
+		log.Printf("Sending message to Grok: %s", text)
 
 		// Stop any currently playing audio
 		m.StopCurrentAudio()
 
-		// Send to existing bidirectional stream
-		log.Printf("Sending message to bidirectional stream: %s", text)
-		if err := m.client.SendMessageToBidiStream(m.bidiStream, text); err != nil {
-			log.Printf("Bidi stream send error: %v", err)
-			return sendErrorMsg{err: fmt.Errorf("bidirectional stream send failed: %w", err)}
+		// Add user message to history
+		userMsg := Message{
+			Sender:    senderNameUser,
+			Content:   text,
+			Timestamp: time.Now(),
+		}
+		m.messages = append(m.messages, userMsg)
+
+		// Create Grok request with conversation history
+		grokMessages := []api.GrokMessage{}
+		
+		// Add system prompt if available
+		if m.systemPrompt != "" {
+			grokMessages = append(grokMessages, api.GrokMessage{
+				Role:    "system",
+				Content: m.systemPrompt,
+			})
 		}
 
+		// Convert message history to Grok format
+		for _, msg := range m.messages {
+			role := "user"
+			if msg.Sender == senderNameModel {
+				role = "assistant"
+			} else if msg.Sender == senderNameSystem {
+				role = "system"
+			}
+			
+			grokMessages = append(grokMessages, api.GrokMessage{
+				Role:    role,
+				Content: msg.Content,
+			})
+		}
+
+		// Create Grok request
+		req := &api.GrokChatRequest{
+			Model:    m.modelName,
+			Messages: grokMessages,
+			Stream:   true,
+		}
+
+		// Add generation parameters if set
+		if m.temperature > 0 {
+			req.Temperature = &m.temperature
+		}
+		if m.maxOutputTokens > 0 {
+			req.MaxTokens = &m.maxOutputTokens
+		}
+
+		// Create context for request
+		ctx := m.streamCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
+		// Start streaming
+		chunkChan, errChan := m.client.GrokChatStream(ctx, req)
+
+		// Start collecting response
+		var responseText strings.Builder
+		responseMsg := Message{
+			Sender:    senderNameModel,
+			Content:   "",
+			Timestamp: time.Now(),
+		}
+
+		// Process stream chunks
+		go func() {
+			for {
+				select {
+				case chunk, ok := <-chunkChan:
+					if !ok {
+						// Stream ended, finalize message
+						if responseText.Len() > 0 {
+							responseMsg.Content = responseText.String()
+							m.messages = append(m.messages, responseMsg)
+						}
+						return
+					}
+
+					// Process chunk
+					if len(chunk.Choices) > 0 && chunk.Choices[0].Delta != nil {
+						deltaText := chunk.Choices[0].Delta.Content
+						responseText.WriteString(deltaText)
+
+						// Send incremental update
+						output := api.StreamOutput{
+							Text:         deltaText,
+							TurnComplete: false,
+						}
+						m.uiUpdateChan <- streamResponseMsg{output: output}
+					}
+
+				case err, ok := <-errChan:
+					if !ok {
+						return
+					}
+					if err != nil {
+						log.Printf("Grok stream error: %v", err)
+						m.uiUpdateChan <- streamErrorMsg{err: err}
+						return
+					}
+				}
+			}
+		}()
+
+		return sentMsg{}
+	}
+}
+
+// sendToBidiStreamCmd returns a command that sends a message to a new stream.
+// This function creates a new stream for each message, mimicking bidirectional capability.
+func (m *Model) sendToBidiStreamCmd(text string) tea.Cmd {
+	log.Printf("sendToBidiStreamCmd: Creating new stream with message: %s", text)
+	return func() tea.Msg {
+		// Stop any currently playing audio
+		m.StopCurrentAudio()
+
+		// Cancel previous context if it exists
+		if m.streamCtxCancel != nil {
+			log.Println("Canceling previous stream context before sending new message")
+			m.streamCtxCancel()
+		}
+
+		// Create a new context with cancellation, using the root context as parent
+		if m.rootCtx == nil {
+			log.Println("Warning: Root context is nil, creating new background context")
+			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
+		}
+		m.streamCtx, m.streamCtxCancel = context.WithCancel(m.rootCtx)
+
+		// Initialize the client configuration
+		clientConfig := api.StreamClientConfig{
+			ModelName:    m.modelName,
+			EnableAudio:  m.enableAudio,
+			VoiceName:    m.voiceName,
+			SystemPrompt: m.systemPrompt,
+			// Add generation parameters
+			Temperature:     m.temperature,
+			TopP:            m.topP,
+			TopK:            m.topK,
+			MaxOutputTokens: m.maxOutputTokens,
+			// Feature flags
+			EnableWebSocket: m.enableWebSocket,
+		}
+
+		if m.enableTools && m.toolManager != nil {
+			var apiToolDefs []*api.ToolDefinition
+			for name, registeredTool := range m.toolManager.RegisteredTools {
+				if registeredTool.IsAvailable {
+					log.Printf("Adding tool definition for API: %s", name)
+					defCopy := registeredTool.ToolDefinition
+					apiToolDefs = append(apiToolDefs, &defCopy)
+				}
+			}
+			clientConfig.ToolDefinitions = m.toolManager.RegisteredToolDefs[:]
+		}
+
+		// Create a request with the user message
+		request := &generativelanguagepb.GenerateContentRequest{
+			Model: m.modelName,
+			Contents: []*generativelanguagepb.Content{
+				{
+					Parts: []*generativelanguagepb.Part{
+						{
+							Data: &generativelanguagepb.Part_Text{
+								Text: text,
+							},
+						},
+					},
+					Role: "user",
+				},
+			},
+		}
+
+		// Set up GenerationConfig
+		genConfig := &generativelanguagepb.GenerationConfig{}
+		genConfig.Temperature = &m.temperature
+		if m.topP > 0 {
+			genConfig.TopP = &m.topP
+		}
+		if m.topK > 0 {
+			genConfig.TopK = &m.topK
+		}
+		if m.maxOutputTokens > 0 {
+			genConfig.MaxOutputTokens = &m.maxOutputTokens
+		}
+
+		request.GenerationConfig = genConfig
+
+		log.Printf("Sending new StreamGenerateContent request: %s", text)
+		stream, err := m.client.GenerativeClient.StreamGenerateContent(m.streamCtx, request)
+		if err != nil {
+			log.Printf("Stream Init Error: %v", err)
+			return sendErrorMsg{err: fmt.Errorf("stream creation failed: %w", err)}
+		}
+
+		// Update the stream in the model
+		m.bidiStream = stream
 		return sentMsg{}
 	}
 }
@@ -359,17 +629,11 @@ func (m *Model) closeStreamCmd() tea.Cmd {
 	}
 }
 
-// closeBidiStreamCmd returns a command that closes a bidirectional stream.
+// closeBidiStreamCmd returns a command that closes a stream.
 func (m *Model) closeBidiStreamCmd() tea.Cmd {
 	return func() tea.Msg {
-		log.Println("Closing bidirectional stream and canceling context")
-		if m.bidiStream != nil {
-			err := m.bidiStream.CloseSend()
-			if err != nil && !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "transport is closing") {
-				log.Printf("Error during Bidi CloseSend: %v", err)
-			}
-			m.bidiStream = nil
-		}
+		log.Println("Closing stream and canceling context")
+		m.bidiStream = nil
 
 		// Cancel the context
 		if m.streamCtxCancel != nil {
@@ -379,9 +643,4 @@ func (m *Model) closeBidiStreamCmd() tea.Cmd {
 
 		return streamClosedMsg{}
 	}
-}
-
-// waitForFocusCmd waits briefly before potentially blocking operations.
-func waitForFocusCmd() tea.Cmd {
-	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg { return nil })
 }
