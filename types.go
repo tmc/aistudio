@@ -263,6 +263,9 @@ type Model struct {
 
 	// System prompt
 	systemPrompt string // System prompt to use for the conversation
+
+	// Experimental integrations moved to .wip files
+	// TODO: Re-enable when stabilized
 }
 
 // Option defines a functional option for configuring the Model.

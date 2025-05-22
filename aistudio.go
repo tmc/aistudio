@@ -437,6 +437,9 @@ func (m *Model) Init() tea.Cmd {
 		}
 	}
 
+	// Experimental integrations temporarily disabled - moved to .wip files
+	// TODO: Re-enable when stabilized
+
 	// --- Continue with the original Init behavior ---
 	// Start with ready state
 	//m.currentState = AppStateReady
@@ -875,12 +878,40 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.currentState = AppStateQuitting
 		log.Println("Ctrl+C pressed, entering Quitting state.")
+		
+		// Shutdown streams
 		if m.stream != nil {
 			cmds = append(cmds, m.closeStreamCmd())
 		}
 		if m.bidiStream != nil {
 			cmds = append(cmds, m.closeBidiStreamCmd())
 		}
+		
+		// Experimental integrations disabled - moved to .wip files
+		// if m.mcpEnabled && m.mcpIntegration != nil {
+		// 	go func() {
+		// 		if err := m.mcpIntegration.Shutdown(m.rootCtx); err != nil {
+		// 			log.Printf("Error shutting down MCP integration: %v", err)
+		// 		}
+		// 	}()
+		// }
+		// 
+		// if m.voiceEnabled && m.voiceStreamer != nil {
+		// 	go func() {
+		// 		if err := m.voiceStreamer.Shutdown(m.rootCtx); err != nil {
+		// 			log.Printf("Error shutting down voice streaming: %v", err)
+		// 		}
+		// 	}()
+		// }
+		// 
+		// if m.videoEnabled && m.videoStreamer != nil {
+		// 	go func() {
+		// 		if err := m.videoStreamer.Shutdown(m.rootCtx); err != nil {
+		// 			log.Printf("Error shutting down video streaming: %v", err)
+		// 		}
+		// 	}()
+		// }
+		
 		// Let the main Update loop handle tea.Quit
 		// return m, tea.Quit
 		return m, tea.Batch(cmds...)
@@ -970,15 +1001,32 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...) // Return early
 
 	case "ctrl+v": // Toggle Video state
-		switch m.videoInputMode {
-		case VideoInputNone:
-			m.videoInputMode = VideoInputCamera
-		case VideoInputCamera:
-			m.videoInputMode = VideoInputScreen
-		case VideoInputScreen:
-			m.videoInputMode = VideoInputNone
-		}
-		log.Printf("Video input simulation toggled: %s", m.videoInputMode)
+		// Experimental video streaming disabled - moved to .wip files
+		// if m.videoEnabled && m.videoStreamer != nil {
+		// 	// Use actual video streaming
+		// 	switch m.videoInputMode {
+		// 	case VideoInputNone:
+		// 		m.videoInputMode = VideoInputCamera
+		// 		cmds = append(cmds, m.videoStreamer.SetVideoInputMode(VideoInputCamera))
+		// 	case VideoInputCamera:
+		// 		m.videoInputMode = VideoInputScreen
+		// 		cmds = append(cmds, m.videoStreamer.SetVideoInputMode(VideoInputScreen))
+		// 	case VideoInputScreen:
+		// 		m.videoInputMode = VideoInputNone
+		// 		cmds = append(cmds, m.videoStreamer.SetVideoInputMode(VideoInputNone))
+		// 	}
+		// } else {
+			// Fallback to simulation mode
+			switch m.videoInputMode {
+			case VideoInputNone:
+				m.videoInputMode = VideoInputCamera
+			case VideoInputCamera:
+				m.videoInputMode = VideoInputScreen
+			case VideoInputScreen:
+				m.videoInputMode = VideoInputNone
+			}
+		// }
+		log.Printf("Video input toggled: %s", m.videoInputMode)
 		if m.videoInputMode != VideoInputNone {
 			m.micActive = false
 		}
@@ -1016,6 +1064,100 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(m.renderAllMessages())
 			m.viewport.GotoBottom()
 		}
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+i": // Toggle voice input
+		// Experimental voice streaming disabled - moved to .wip files
+		// if m.voiceEnabled && m.voiceStreamer != nil {
+		// 	if m.voiceStreamer.isStreaming {
+		// 		if err := m.voiceStreamer.Stop(); err != nil {
+		// 			log.Printf("Error stopping voice input: %v", err)
+		// 		}
+		// 		m.messages = append(m.messages, formatMessage("System", "Voice input stopped."))
+		// 	} else {
+		// 		if err := m.voiceStreamer.StartVoiceInput(); err != nil {
+		// 			log.Printf("Error starting voice input: %v", err)
+		// 			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Failed to start voice input: %v", err)))
+		// 		} else {
+		// 			m.messages = append(m.messages, formatMessage("System", "Voice input started. Speak into your microphone."))
+		// 		}
+		// 	}
+		// } else {
+		m.messages = append(m.messages, formatMessage("System", "Voice input is disabled. Enable with --voice flag."))
+		// }
+		m.viewport.SetContent(m.renderAllMessages())
+		m.viewport.GotoBottom()
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+o": // Toggle voice output
+		// Experimental voice streaming disabled - moved to .wip files
+		// if m.voiceEnabled && m.voiceStreamer != nil {
+		// 	if err := m.voiceStreamer.StartVoiceOutput(); err != nil {
+		// 		log.Printf("Error starting voice output: %v", err)
+		// 		m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Failed to start voice output: %v", err)))
+		// 	} else {
+		// 		m.messages = append(m.messages, formatMessage("System", "Voice output enabled for responses."))
+		// 	}
+		// } else {
+		m.messages = append(m.messages, formatMessage("System", "Voice output is disabled. Enable with --voice flag."))
+		// }
+		m.viewport.SetContent(m.renderAllMessages())
+		m.viewport.GotoBottom()
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+b": // Toggle bidirectional voice
+		// Experimental voice streaming disabled - moved to .wip files
+		// if m.voiceEnabled && m.voiceStreamer != nil {
+		// 	if m.voiceStreamer.isStreaming {
+		// 		if err := m.voiceStreamer.Stop(); err != nil {
+		// 			log.Printf("Error stopping voice streaming: %v", err)
+		// 		}
+		// 		m.messages = append(m.messages, formatMessage("System", "Bidirectional voice stopped."))
+		// 	} else {
+		// 		if err := m.voiceStreamer.StartBidirectional(); err != nil {
+		// 			log.Printf("Error starting bidirectional voice: %v", err)
+		// 			m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Failed to start bidirectional voice: %v", err)))
+		// 		} else {
+		// 			m.messages = append(m.messages, formatMessage("System", "Bidirectional voice started. You can speak and listen simultaneously."))
+		// 		}
+		// 	}
+		// } else {
+		m.messages = append(m.messages, formatMessage("System", "Voice streaming is disabled. Enable with --voice flag."))
+		// }
+		m.viewport.SetContent(m.renderAllMessages())
+		m.viewport.GotoBottom()
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+e": // Show MCP status
+		// Experimental MCP integration disabled - moved to .wip files
+		// if m.mcpEnabled && m.mcpIntegration != nil {
+		// 	var statusText strings.Builder
+		// 	statusText.WriteString("MCP Integration Status:\n")
+		// 	
+		// 	// Server status
+		// 	if server := m.mcpIntegration.GetMCPServer(); server != nil {
+		// 		statusText.WriteString("✓ MCP Server: Running\n")
+		// 	} else {
+		// 		statusText.WriteString("✗ MCP Server: Not running\n")
+		// 	}
+		// 	
+		// 	// Client status
+		// 	clients := m.mcpIntegration.GetMCPClients()
+		// 	statusText.WriteString(fmt.Sprintf("✓ MCP Clients: %d connected\n", len(clients)))
+		// 	for name, client := range clients {
+		// 		if client.Connected {
+		// 			statusText.WriteString(fmt.Sprintf("  • %s: Connected\n", name))
+		// 		} else {
+		// 			statusText.WriteString(fmt.Sprintf("  • %s: Disconnected\n", name))
+		// 		}
+		// 	}
+		// 	
+		// 	m.messages = append(m.messages, formatMessage("System", statusText.String()))
+		// } else {
+		m.messages = append(m.messages, formatMessage("System", "MCP integration is disabled. Enable with --mcp flag."))
+		// }
+		m.viewport.SetContent(m.renderAllMessages())
+		m.viewport.GotoBottom()
 		return m, tea.Batch(cmds...)
 
 	case "enter": // Send message
@@ -1777,4 +1919,29 @@ func (m *Model) autoSendCmd() tea.Cmd {
 	return tea.Tick(m.autoSendDelay, func(t time.Time) tea.Msg {
 		return autoSendMsg{}
 	})
+}
+
+// Experimental integrations disabled - moved to .wip files
+// GetMCPIntegration returns the MCP integration instance
+// func (m *Model) GetMCPIntegration() *MCPIntegration {
+// 	return m.mcpIntegration
+// }
+
+// GetVoiceStreamer returns the voice streamer instance
+// func (m *Model) GetVoiceStreamer() *VoiceStreamer {
+// 	return m.voiceStreamer
+// }
+
+// GetVideoStreamer returns the video streamer instance
+// func (m *Model) GetVideoStreamer() *VideoStreamer {
+// 	return m.videoStreamer
+// }
+
+// NewModel creates a new aistudio model with functional options for configuration.
+func NewModel(opts ...Option) (*Model, error) {
+	model := New(opts...)
+	if model == nil {
+		return nil, fmt.Errorf("failed to create model")
+	}
+	return model, nil
 }
