@@ -1,0 +1,48 @@
+# Test for Replace tool
+# Tool should be on the PATH
+
+# Test creating a new file
+exec aistudio-tool-Replace '{
+  "file_path": "replacefile.txt",
+  "content": "This is new content for the file.\nIt has multiple lines.\nAnd serves as a test for the Replace tool."
+}'
+stdout 'Successfully wrote file: replacefile.txt'
+exists replacefile.txt
+
+# Verify content was written correctly
+exec aistudio-tool-View '{"file_path": "replacefile.txt"}'
+stdout 'This is new content for the file.'
+stdout 'It has multiple lines.'
+stdout 'And serves as a test for the Replace tool.'
+
+# Test overwriting existing file
+exec aistudio-tool-Replace '{
+  "file_path": "replacefile.txt",
+  "content": "This content replaces the previous content.\nThe file has been overwritten."
+}'
+stdout 'Successfully wrote file: replacefile.txt'
+
+# Verify file was overwritten
+exec aistudio-tool-View '{"file_path": "replacefile.txt"}'
+stdout 'This content replaces the previous content.'
+stdout 'The file has been overwritten.'
+! stdout 'This is new content for the file.'
+
+# Test with empty content
+exec aistudio-tool-Replace '{
+  "file_path": "emptyfile.txt",
+  "content": ""
+}'
+stdout 'Successfully wrote file: emptyfile.txt'
+exists emptyfile.txt
+
+# Verify empty file was created
+exec aistudio-tool-View '{"file_path": "emptyfile.txt"}'
+! stdout '.'
+
+# Test missing required parameters
+! exec aistudio-tool-Replace '{}'
+stdout 'Error: file_path and content parameters are required'
+
+! exec aistudio-tool-Replace '{"file_path": "missingcontent.txt"}'
+stdout 'Error: content parameter is required'

@@ -1,0 +1,100 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-BatchTool
+#
+# Executes multiple tool invocations in a single request.
+# 
+# Parameters:
+#   - description: Short description of the batch operation (required)
+#   - invocations: Array of tool invocations to execute (required)
+#
+# Example:
+#   {"description": "Find and read configuration files", "invocations": [
+#     {"tool_name": "GlobTool", "input": {"pattern": "**/*.config"}},
+#     {"tool_name": "GrepTool", "input": {"pattern": "password", "include": "*.js"}}
+#   ]}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+description=$(echo "$*" | jq -r '.description')
+invocations=$(echo "$*" | jq -c '.invocations[]')
+
+# Validate input
+if [ -z "$description" ] || [ "$description" == "null" ]; then
+  echo "Error: description parameter is required"
+  exit 1
+fi
+
+if [ -z "$invocations" ]; then
+  echo "Error: invocations array is required and must not be empty"
+  exit 1
+fi
+
+# Prepare for parallel execution
+tool_count=$(echo "$invocations" | wc -l)
+echo "====================================================="
+echo "Executing batch: $description"
+echo "Number of tools to execute: $tool_count"
+echo "====================================================="
+
+# Create a temp directory for results
+tmp_dir=$(mktemp -d)
+trap 'rm -rf "$tmp_dir"' EXIT
+
+# Launch all tool invocations in parallel
+count=0
+echo "$invocations" | while read -r invocation; do
+  tool_name=$(echo "$invocation" | jq -r '.tool_name')
+  tool_input=$(echo "$invocation" | jq -r '.input')
+  
+  count=$((count+1))
+  result_file="${tmp_dir}/result_${count}_${tool_name}"
+  
+  # Check if the tool executable exists
+  tool_path="aistudio-tool-$tool_name"
+  
+  echo "[$count/$tool_count] Launching tool: $tool_name"
+  
+  if command -v "$tool_path" &> /dev/null; then
+    # Execute the tool with its input in background
+    (
+      echo "==== RESULT FROM: $tool_name ===="
+      echo "Input: $(echo "$tool_input" | jq -c '.')"
+      echo "----"
+      # Execute and capture both stdout and stderr
+      {
+        echo "$tool_input" | "$tool_path" 2>&1
+        echo "Exit code: $?"
+      } | tee "$result_file"
+      echo "================================="
+    ) &
+    
+    # Store the PID for tracking
+    pids[$count]=$!
+  else
+    echo "Error: Tool $tool_name not found or not executable" > "$result_file"
+    echo "Skipping invocation #$count ($tool_name)"
+  fi
+done
+
+# Wait for all background processes to complete
+echo "Waiting for all tool invocations to complete..."
+wait
+
+# Display results in order
+echo -e "\n====================================================="
+echo "BATCH EXECUTION RESULTS"
+echo "====================================================="
+
+for i in $(seq 1 "$tool_count"); do
+  result_file="${tmp_dir}/result_${i}_"*
+  if [ -f "$result_file" ]; then
+    cat "$result_file"
+    echo "-----------------------------------------------------"
+  fi
+done
+
+echo "Batch execution complete: $description"

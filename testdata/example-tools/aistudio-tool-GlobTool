@@ -1,0 +1,55 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-GlobTool
+#
+# Fast file pattern matching tool that works with any codebase size.
+# 
+# Parameters:
+#   - pattern: The glob pattern to match files against (required)
+#   - path: Optional directory to search in (defaults to current directory)
+#
+# Example:
+#   {"pattern": "**/*.js", "path": "/home/user/projects"}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+pattern=$(echo "$*" | jq -r '.pattern')
+path=$(echo "$*" | jq -r 'if has("path") then .path else "." end')
+
+# Validate input
+if [ -z "$pattern" ] || [ "$pattern" == "null" ]; then
+  echo "Error: pattern parameter is required"
+  exit 1
+fi
+
+# Default to current directory if path is null or empty
+if [ "$path" == "null" ] || [ -z "$path" ]; then
+  path="."
+fi
+
+# Check if path exists
+if [ ! -d "$path" ]; then
+  echo "Warning: Directory '$path' does not exist or is not accessible"
+  exit 1
+fi
+
+echo "Searching for files matching pattern: $pattern"
+echo "In directory: $path"
+
+# Use find with glob pattern to locate files
+# Sort by modification time (newest first)
+result=$(find "$path" -path "$pattern" -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2-)
+
+# Check if any files were found
+if [ -z "$result" ]; then
+  echo "No files found matching pattern: $pattern"
+  exit 0
+fi
+
+# Count matches for summary
+file_count=$(echo "$result" | wc -l)
+echo "Found $file_count matching files:"
+ctx-exec "echo \"$result\""

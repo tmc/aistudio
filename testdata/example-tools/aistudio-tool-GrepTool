@@ -1,0 +1,66 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-GrepTool
+#
+# Fast content search tool that works with any codebase size.
+# 
+# Parameters:
+#   - pattern: The regex pattern to search for (required)
+#   - path: Optional directory to search in (defaults to current directory)
+#   - include: Optional file pattern to include in the search (e.g., "*.js")
+#
+# Example:
+#   {"pattern": "function\\s+main", "path": "/home/user/src", "include": "*.go"}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+pattern=$(echo "$*" | jq -r '.pattern')
+path=$(echo "$*" | jq -r 'if has("path") then .path else "." end')
+include=$(echo "$*" | jq -r 'if has("include") then .include else "" end')
+
+# Validate input
+if [ -z "$pattern" ] || [ "$pattern" == "null" ]; then
+  echo "Error: pattern parameter is required"
+  exit 1
+fi
+
+# Default to current directory if path is null or empty
+if [ "$path" == "null" ] || [ -z "$path" ]; then
+  path="."
+fi
+
+# Check if path exists
+if [ ! -d "$path" ]; then
+  echo "Warning: Directory '$path' does not exist or is not accessible"
+  exit 1
+fi
+
+echo "Searching for pattern: $pattern"
+echo "In directory: $path"
+if [ "$include" != "null" ] && [ -n "$include" ]; then
+  echo "Including only files matching: $include"
+fi
+
+# Form the grep command with color highlighting and line numbers
+if [ "$include" == "null" ] || [ -z "$include" ]; then
+  # No include pattern specified - search all text files
+  grep_result=$(grep -r --color=always --include="*" --line-number --binary-files=without-match "$pattern" "$path" 2>/dev/null | sort)
+else
+  # Use the specified include pattern
+  grep_result=$(grep -r --color=always --include="$include" --line-number --binary-files=without-match "$pattern" "$path" 2>/dev/null | sort)
+fi
+
+# Check if any matches were found
+if [ -z "$grep_result" ]; then
+  echo "No matches found for pattern: $pattern"
+  exit 0
+fi
+
+# Count matches and files for summary
+match_count=$(echo "$grep_result" | wc -l)
+file_count=$(echo "$grep_result" | cut -d: -f1 | sort -u | wc -l)
+echo "Found $match_count matches across $file_count files:"
+ctx-exec "echo \"$grep_result\""

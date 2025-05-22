@@ -1,0 +1,219 @@
+[
+    {
+      "name": "GlobTool",
+      "description": "- Fast file pattern matching tool that works with any codebase size\n- Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\"\n- Returns matching file paths sorted by modification time\n- Use this tool when you need to find files by name patterns\n- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead\n",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The glob pattern to match files against"
+          },
+          "path": {
+            "type": "string",
+            "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided."
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    {
+      "name": "GrepTool",
+      "description": "\n- Fast content search tool that works with any codebase size\n- Searches file contents using regular expressions\n- Supports full regex syntax (eg. \"log.*Error\", \"function\\s+\\w+\", etc.)\n- Filter files by pattern with the include parameter (eg. \"*.js\", \"*.{ts,tsx}\")\n- Returns matching file paths sorted by modification time\n- Use this tool when you need to find files containing specific patterns\n- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead\n",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The regular expression pattern to search for in file contents"
+          },
+          "path": {
+            "type": "string",
+            "description": "The directory to search in. Defaults to the current working directory."
+          },
+          "include": {
+            "type": "string",
+            "description": "File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")"
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    {
+      "name": "LS",
+      "description": "Lists files and directories in a given path. The path parameter must be an absolute path, not a relative path. You can optionally provide an array of glob patterns to ignore with the ignore parameter. You should generally prefer the Glob and Grep tools, if you know which directories to search.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The absolute path to the directory to list (must be absolute, not relative)"
+          },
+          "ignore": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of glob patterns to ignore"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "View",
+      "description": "Reads a file from the local filesystem. You can access any file directly by using this tool.\nAssume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- The file_path parameter must be an absolute path, not a relative path\n- By default, it reads up to 2000 lines starting from the beginning of the file\n- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters\n- Any lines longer than 2000 characters will be truncated\n- Results are returned using cat -n format, with line numbers starting at 1\n- This tool allows Claude Code to VIEW images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Claude Code is a multimodal LLM.\n- For Jupyter notebooks (.ipynb files), use the ReadNotebook instead\n- When reading multiple files, you MUST use the BatchTool tool to read them all at once",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The absolute path to the file to read"
+          },
+          "offset": {
+            "type": "number",
+            "description": "The line number to start reading from. Only provide if the file is too large to read at once"
+          },
+          "limit": {
+            "type": "number",
+            "description": "The number of lines to read. Only provide if the file is too large to read at once."
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      }
+    },
+    {
+      "name": "Edit",
+      "description": "This is a tool for editing files. For moving or renaming files, you should generally use the Bash tool with the 'mv' command instead. For larger edits, use the Write tool to overwrite files. For Jupyter notebooks (.ipynb files), use the NotebookEditCell instead.\n\nBefore using this tool:\n\n1. Use the View tool to understand the file's contents and context\n\n2. Verify the directory path is correct (only applicable when creating new files):\n   - Use the LS tool to verify the parent directory exists and is the correct location\n\nTo make a file edit, provide the following:\n1. file_path: The absolute path to the file to modify (must be absolute, not relative)\n2. old_string: The text to replace (must match the file contents exactly, including all whitespace and indentation)\n3. new_string: The edited text to replace the old_string\n4. expected_replacements: The number of replacements you expect to make. Defaults to 1 if not specified.\n\nBy default, the tool will replace ONE occurrence of old_string with new_string in the specified file. If you want to replace multiple occurrences, provide the expected_replacements parameter with the exact number of occurrences you expect.\n\nCRITICAL REQUIREMENTS FOR USING THIS TOOL:\n\n1. UNIQUENESS (when expected_replacements is not specified): The old_string MUST uniquely identify the specific instance you want to change. This means:\n   - Include AT LEAST 3-5 lines of context BEFORE the change point\n   - Include AT LEAST 3-5 lines of context AFTER the change point\n   - Include all whitespace, indentation, and surrounding code exactly as it appears in the file\n\n2. EXPECTED MATCHES: If you want to replace multiple instances:\n   - Use the expected_replacements parameter with the exact number of occurrences you expect to replace\n   - This will replace ALL occurrences of the old_string with the new_string\n   - If the actual number of matches doesn't equal expected_replacements, the edit will fail\n   - This is a safety feature to prevent unintended replacements\n\n3. VERIFICATION: Before using this tool:\n   - Check how many instances of the target text exist in the file\n   - If multiple instances exist, either:\n     a) Gather enough context to uniquely identify each one and make separate calls, OR\n     b) Use expected_replacements parameter with the exact count of instances you expect to replace\n\nWARNING: If you do not follow these requirements:\n   - The tool will fail if old_string matches multiple locations and expected_replacements isn't specified\n   - The tool will fail if the number of matches doesn't equal expected_replacements when it's specified\n   - The tool will fail if old_string doesn't match exactly (including whitespace)\n   - You may change unintended instances if you don't verify the match count\n\nWhen making edits:\n   - Ensure the edit results in idiomatic, correct code\n   - Do not leave the code in a broken state\n   - Always use absolute file paths (starting with /)\n\nIf you want to create a new file, use:\n   - A new file path, including dir name if needed\n   - An empty old_string\n   - The new file's contents as new_string\n\nRemember: when making multiple file edits in a row to the same file, you should prefer to send all edits in a single message with multiple calls to this tool, rather than multiple messages with a single call each.\n",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The absolute path to the file to modify"
+          },
+          "old_string": {
+            "type": "string",
+            "description": "The text to replace"
+          },
+          "new_string": {
+            "type": "string",
+            "description": "The text to replace it with"
+          },
+          "expected_replacements": {
+            "type": "number",
+            "description": "The expected number of replacements to perform. Defaults to 1 if not specified."
+          }
+        },
+        "required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ]
+      }
+    },
+    {
+      "name": "Replace",
+      "description": "Write a file to the local filesystem. Overwrites the existing file if there is one.\n\nBefore using this tool:\n\n1. Use the ReadFile tool to understand the file's contents and context\n\n2. Directory Verification (only applicable when creating new files):\n   - Use the LS tool to verify the parent directory exists and is the correct location",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The absolute path to the file to write (must be absolute, not relative)"
+          },
+          "content": {
+            "type": "string",
+            "description": "The content to write to the file"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "ReadNotebook",
+      "description": "Reads a Jupyter notebook (.ipynb file) and returns all of the cells with their outputs. Jupyter notebooks are interactive documents that combine code, text, and visualizations, commonly used for data analysis and scientific computing. The notebook_path parameter must be an absolute path, not a relative path.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "notebook_path": {
+            "type": "string",
+            "description": "The absolute path to the Jupyter notebook file to read (must be absolute, not relative)"
+          }
+        },
+        "required": [
+          "notebook_path"
+        ]
+      }
+    },
+    {
+      "name": "NotebookEditCell",
+      "description": "Completely replaces the contents of a specific cell in a Jupyter notebook (.ipynb file) with new source. Jupyter notebooks are interactive documents that combine code, text, and visualizations, commonly used for data analysis and scientific computing. The notebook_path parameter must be an absolute path, not a relative path. The cell_number is 0-indexed. Use edit_mode=insert to add a new cell at the index specified by cell_number. Use edit_mode=delete to delete the cell at the index specified by cell_number.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "notebook_path": {
+            "type": "string",
+            "description": "The absolute path to the Jupyter notebook file to edit (must be absolute, not relative)"
+          },
+          "cell_number": {
+            "type": "number",
+            "description": "The index of the cell to edit (0-based)"
+          },
+          "new_source": {
+            "type": "string",
+            "description": "The new source for the cell"
+          },
+          "cell_type": {
+            "type": "string",
+            "enum": [
+              "code",
+              "markdown"
+            ],
+            "description": "The type of the cell (code or markdown). If not specified, it defaults to the current cell type. If using edit_mode=insert, this is required."
+          },
+          "edit_mode": {
+            "type": "string",
+            "description": "The type of edit to make (replace, insert, delete). Defaults to replace."
+          }
+        },
+        "required": [
+          "notebook_path",
+          "cell_number",
+          "new_source"
+        ]
+      }
+    },
+    {
+      "name": "WebFetchTool",
+      "description": "\n- Fetches content from a specified URL and processes it using an AI model\n- Takes a URL and a prompt as input\n- Fetches the URL content, converts HTML to markdown\n- Processes the content with the prompt using a small, fast model\n- Returns the model's response about the content\n- Use this tool when you need to retrieve and analyze web content\n\nUsage notes:\n  - IMPORTANT: If an MCP-provided web fetch tool is available, prefer using that tool instead of this one, as it may have fewer restrictions. All MCP-provided tools start with \"mcp__\".\n  - The URL must be a fully-formed valid URL\n  - HTTP URLs will be automatically upgraded to HTTPS\n  - For security reasons, the URL's domain must have been provided directly by the user, unless it's on a small pre-approved set of the top few dozen hosts for popular coding resources, like react.dev.\n  - The prompt should describe what information you want to extract from the page\n  - This tool is read-only and does not modify any files\n  - Results may be summarized if the content is very large\n  - Includes a self-cleaning 15-minute cache for faster responses when repeatedly accessing the same URL\n",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL to fetch content from"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The prompt to run on the fetched content"
+          }
+        },
+        "required": [
+          "url",
+          "prompt"
+        ]
+      }
+    }
+  ]

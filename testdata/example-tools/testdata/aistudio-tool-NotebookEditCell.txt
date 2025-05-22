@@ -1,0 +1,69 @@
+# Test for NotebookEditCell tool
+# Tool should be on the PATH
+
+# Setup a basic Jupyter notebook file
+exec aistudio-tool-Replace '{
+  "file_path": "edit_notebook.ipynb",
+  "content": "{\n  \"cells\": [\n    {\n      \"cell_type\": \"markdown\",\n      \"metadata\": {},\n      \"source\": [\"# Test Notebook\\n\", \"This is a test markdown cell.\"]\n    },\n    {\n      \"cell_type\": \"code\",\n      \"execution_count\": 1,\n      \"metadata\": {},\n      \"source\": [\"# Python code cell\\n\", \"def hello():\\n\", \"    return \\\"Hello, world!\\\"\"],\n      \"outputs\": []\n    },\n    {\n      \"cell_type\": \"code\",\n      \"execution_count\": 2,\n      \"metadata\": {},\n      \"source\": [\"print(hello())\"],\n      \"outputs\": [\n        {\n          \"name\": \"stdout\",\n          \"output_type\": \"stream\",\n          \"text\": [\"Hello, world!\\n\"]\n        }\n      ]\n    }\n  ],\n  \"metadata\": {\n    \"kernelspec\": {\n      \"display_name\": \"Python 3\",\n      \"language\": \"python\",\n      \"name\": \"python3\"\n    }\n  },\n  \"nbformat\": 4,\n  \"nbformat_minor\": 4\n}"
+}'
+exists edit_notebook.ipynb
+
+# Test replace mode (default)
+exec aistudio-tool-NotebookEditCell '{
+  "notebook_path": "edit_notebook.ipynb",
+  "cell_number": 0,
+  "new_source": "# Modified Notebook\nThis markdown cell has been modified."
+}'
+stdout 'Successfully edited cell 0 in notebook: edit_notebook.ipynb'
+
+# Verify cell was replaced
+exec aistudio-tool-ReadNotebook '{"notebook_path": "edit_notebook.ipynb"}'
+stdout 'Cell 0 \(Markdown\):'
+stdout '# Modified Notebook'
+stdout 'This markdown cell has been modified.'
+
+# Test editing code cell
+exec aistudio-tool-NotebookEditCell '{
+  "notebook_path": "edit_notebook.ipynb",
+  "cell_number": 1,
+  "new_source": "# Modified code cell\ndef hello():\n    return \"Hello, modified world!\""
+}'
+stdout 'Successfully edited cell 1 in notebook: edit_notebook.ipynb'
+
+# Test insert mode
+exec aistudio-tool-NotebookEditCell '{
+  "notebook_path": "edit_notebook.ipynb",
+  "cell_number": 1,
+  "new_source": "# New inserted cell",
+  "cell_type": "markdown",
+  "edit_mode": "insert"
+}'
+stdout 'Successfully inserted new cell at position 1 in notebook: edit_notebook.ipynb'
+
+# Verify insert worked (cell count increased)
+exec aistudio-tool-ReadNotebook '{"notebook_path": "edit_notebook.ipynb"}'
+stdout 'Cell 1 \(Markdown\):'
+stdout '# New inserted cell'
+stdout 'Cell 2 \(Code\):'
+stdout '# Modified code cell'
+
+# Test delete mode
+exec aistudio-tool-NotebookEditCell '{
+  "notebook_path": "edit_notebook.ipynb",
+  "cell_number": 1,
+  "new_source": "",
+  "edit_mode": "delete"
+}'
+stdout 'Successfully deleted cell 1 in notebook: edit_notebook.ipynb'
+
+# Test with invalid cell number (should fail)
+! exec aistudio-tool-NotebookEditCell '{
+  "notebook_path": "edit_notebook.ipynb",
+  "cell_number": 999,
+  "new_source": "This should fail"
+}'
+stdout 'Error: Cell index out of range'
+
+# Test missing required parameters
+! exec aistudio-tool-NotebookEditCell '{}'
+stdout 'Error: notebook_path, cell_number, and new_source parameters are required'

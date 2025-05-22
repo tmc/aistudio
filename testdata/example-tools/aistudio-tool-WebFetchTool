@@ -1,0 +1,133 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-WebFetchTool
+#
+# Fetches content from a URL and provides a summary based on the prompt.
+# 
+# Parameters:
+#   - url: The URL to fetch content from (required)
+#   - prompt: A prompt describing what information to extract (required)
+#
+# Example:
+#   {"url": "https://github.com/golang/go/blob/master/README.md", "prompt": "Summarize the main features of Go"}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+url=$(echo "$*" | jq -r '.url')
+prompt=$(echo "$*" | jq -r '.prompt')
+
+# Validate input
+if [ -z "$url" ] || [ "$url" == "null" ]; then
+  echo "Error: url parameter is required"
+  exit 1
+fi
+
+if [ -z "$prompt" ] || [ "$prompt" == "null" ]; then
+  echo "Error: prompt parameter is required"
+  exit 1
+fi
+
+# Validate URL format
+if ! [[ "$url" =~ ^https?:// ]]; then
+  echo "Error: URL must start with http:// or https://"
+  exit 1
+fi
+
+# Enforce HTTPS
+if [[ "$url" == http://* ]]; then
+  https_url=$(echo "$url" | sed 's|^http:|https:|')
+  echo "Converting to HTTPS: $https_url"
+  url="$https_url"
+fi
+
+# Security check - only allow certain domains
+# Extract domain from URL
+domain=$(echo "$url" | sed -E 's|^https?://([^/]+).*|\1|')
+
+# List of allowed domains (popular coding resources)
+allowed_domains=(
+  "github.com"
+  "stackoverflow.com"
+  "docs.python.org"
+  "developer.mozilla.org"
+  "react.dev"
+  "nodejs.org"
+  "go.dev"
+  "docs.google.com"
+  "cloud.google.com"
+  "anthropic.com"
+  "openai.com"
+  "nytimes.com"
+  "wikipedia.org"
+)
+
+# Check if domain is allowed
+domain_allowed=false
+for allowed_domain in "${allowed_domains[@]}"; do
+  if [[ "$domain" == *"$allowed_domain" ]]; then
+    domain_allowed=true
+    break
+  fi
+done
+
+if [ "$domain_allowed" = true ]; then
+  echo "Fetching content from: $url"
+  echo "Prompt: $prompt"
+  
+  # Create a cache directory with cleanup
+  cache_dir="/tmp/aistudio-webcache"
+  mkdir -p "$cache_dir"
+  
+  # Create a hash of the URL for cache filename
+  url_hash=$(echo "$url" | md5sum | cut -d' ' -f1)
+  cache_file="$cache_dir/$url_hash"
+  
+  # Check cache (if less than 15 minutes old)
+  if [ -f "$cache_file" ] && [ $(($(date +%s) - $(stat -c %Y "$cache_file"))) -lt 900 ]; then
+    echo "Using cached content (less than 15 minutes old)"
+    content=$(cat "$cache_file")
+  else
+    echo "Fetching fresh content..."
+    # Fetch content using curl with timeout and convert to markdown
+    content=$(curl -s -L --max-time 10 "$url" | pandoc -f html -t markdown 2>/dev/null || echo "Error converting content to markdown")
+    
+    # Cache the content
+    echo "$content" > "$cache_file"
+    
+    # Clean up old cache files (older than 15 minutes)
+    find "$cache_dir" -type f -mmin +15 -delete
+  fi
+  
+  # Limit content size if needed
+  content_length=${#content}
+  if [ "$content_length" -gt 20000 ]; then
+    echo "Content is large ($content_length characters), truncating to 20,000 characters"
+    content="${content:0:20000}...(content truncated)"
+  else
+    echo "Content size: $content_length characters"
+  fi
+  
+  # Format response with metadata and content
+  echo "---"
+  echo "URL: $url"
+  echo "Domain: $domain"
+  echo "Prompt: $prompt"
+  echo "---"
+  
+  # Return complete content (or simulate AI analysis if this was for a real LLM)
+  echo "Content summary:"
+  echo "$content" | head -n 50
+  
+  if [ "$content_length" -gt 1000 ]; then
+    echo "..."
+    echo "[Content truncated in display - full content was $(wc -l <<< "$content") lines]"
+  fi
+else
+  echo "Error: Domain '$domain' is not allowed for security reasons"
+  echo "Allowed domains are:"
+  printf -- "- %s\n" "${allowed_domains[@]}"
+  exit 1
+fi

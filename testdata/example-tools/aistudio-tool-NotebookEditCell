@@ -1,0 +1,152 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-NotebookEditCell
+#
+# Edits cells in a Jupyter notebook (.ipynb file).
+# 
+# Parameters:
+#   - notebook_path: Absolute path to the notebook file (required)
+#   - cell_number: Index of the cell to edit (0-based) (required)
+#   - new_source: New content for the cell (required)
+#   - cell_type: Type of cell ("code" or "markdown") (optional for replace, required for insert)
+#   - edit_mode: Type of edit ("replace", "insert", "delete") (optional, default: "replace")
+#
+# Example:
+#   {"notebook_path": "/home/user/analysis.ipynb", "cell_number": 2, "new_source": "print('Hello')", "cell_type": "code"}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+notebook_path=$(echo "$*" | jq -r '.notebook_path')
+cell_number=$(echo "$*" | jq -r '.cell_number')
+new_source=$(echo "$*" | jq -r '.new_source')
+cell_type=$(echo "$*" | jq -r 'if has("cell_type") then .cell_type else "" end')
+edit_mode=$(echo "$*" | jq -r 'if has("edit_mode") then .edit_mode else "replace" end')
+
+# Validate input
+if [ -z "$notebook_path" ] || [ "$notebook_path" == "null" ]; then
+  echo "Error: notebook_path parameter is required"
+  exit 1
+fi
+
+if ! [[ "$cell_number" =~ ^[0-9]+$ ]]; then
+  echo "Error: cell_number must be a non-negative integer"
+  exit 1
+fi
+
+if [ "$edit_mode" != "delete" ] && [ -z "$new_source" ] && [ "$new_source" == "null" ]; then
+  echo "Error: new_source parameter is required for replace/insert operations"
+  exit 1
+fi
+
+if [ "$edit_mode" == "insert" ] && { [ -z "$cell_type" ] || [ "$cell_type" == "null" ]; }; then
+  echo "Error: cell_type parameter is required for insert mode"
+  exit 1
+fi
+
+if [ "$cell_type" != "" ] && [ "$cell_type" != "code" ] && [ "$cell_type" != "markdown" ]; then
+  echo "Error: cell_type must be 'code' or 'markdown' if specified"
+  exit 1
+fi
+
+# Check if file exists
+if [ ! -f "$notebook_path" ]; then
+  echo "Error: Notebook file does not exist: $notebook_path"
+  exit 1
+fi
+
+# Check if file has .ipynb extension
+if [[ "$notebook_path" != *.ipynb ]]; then
+  echo "Error: File doesn't appear to be a Jupyter notebook (should have .ipynb extension)"
+  exit 1
+fi
+
+# Check if file is a valid JSON file
+if ! jq -e . "$notebook_path" > /dev/null 2>&1; then
+  echo "Error: File is not a valid JSON file"
+  exit 1
+fi
+
+# Create a backup of the notebook
+backup_file="${notebook_path}.bak-$(date +%s)"
+cp "$notebook_path" "$backup_file"
+echo "Created backup at: $backup_file"
+
+# Get cell count for validation
+cell_count=$(jq '.cells | length' "$notebook_path")
+
+# Validate cell_number is in range
+if [ "$edit_mode" != "insert" ] && [ "$cell_number" -ge "$cell_count" ]; then
+  echo "Error: cell_number ($cell_number) is out of range - notebook only has $cell_count cells"
+  exit 1
+fi
+
+if [ "$edit_mode" == "insert" ] && [ "$cell_number" -gt "$cell_count" ]; then
+  echo "Error: For insert mode, cell_number ($cell_number) cannot exceed the current cell count ($cell_count)"
+  exit 1
+fi
+
+# Create temp files
+temp_file=$(mktemp)
+temp_source=$(mktemp)
+
+# Write new source to temp file
+echo "$new_source" > "$temp_source"
+
+# Log operation
+echo "Notebook: $(basename "$notebook_path")"
+echo "Operation: $edit_mode cell at index $cell_number"
+
+case "$edit_mode" in
+  "replace")
+    # Get current cell type for reference
+    current_cell_type=$(jq -r ".cells[$cell_number].cell_type // \"unknown\"" "$notebook_path")
+    
+    # Replace the cell content
+    if [ -z "$cell_type" ] || [ "$cell_type" == "null" ]; then
+      # Maintain the current cell type
+      echo "Replacing content of $current_cell_type cell at index $cell_number (keeping cell type)"
+      jq --argjson idx "$cell_number" --rawfile src "$temp_source" \
+        '.cells[$idx].source = ($src | split("\n") | map(. + "\n"))' \
+        "$notebook_path" > "$temp_file"
+    else
+      # Update both cell type and content
+      echo "Replacing content of cell at index $cell_number and changing type from $current_cell_type to $cell_type"
+      jq --argjson idx "$cell_number" --arg type "$cell_type" --rawfile src "$temp_source" \
+        '.cells[$idx].cell_type = $type | .cells[$idx].source = ($src | split("\n") | map(. + "\n"))' \
+        "$notebook_path" > "$temp_file"
+    fi
+    ;;
+    
+  "insert")
+    echo "Inserting new $cell_type cell at index $cell_number"
+    # Create a new cell and insert it
+    jq --argjson idx "$cell_number" --arg type "$cell_type" --rawfile src "$temp_source" \
+      '.cells = .cells[0:$idx] + [{"cell_type": $type, "source": ($src | split("\n") | map(. + "\n")), "metadata": {}, "outputs": []}] + .cells[$idx:]' \
+      "$notebook_path" > "$temp_file"
+    ;;
+    
+  "delete")
+    echo "Deleting cell at index $cell_number"
+    # Delete the cell
+    jq --argjson idx "$cell_number" '.cells = .cells[0:$idx] + .cells[$idx+1:]' "$notebook_path" > "$temp_file"
+    ;;
+    
+  *)
+    echo "Error: Unknown edit_mode: $edit_mode"
+    rm -f "$temp_file" "$temp_source"
+    exit 1
+    ;;
+esac
+
+# Replace the original notebook
+ctx-exec "cp \"$temp_file\" \"$notebook_path\""
+
+# Get updated cell count
+new_cell_count=$(jq '.cells | length' "$notebook_path")
+echo "Notebook updated successfully: $notebook_path now has $new_cell_count cells (was $cell_count)"
+
+# Clean up temp files
+rm -f "$temp_file" "$temp_source"

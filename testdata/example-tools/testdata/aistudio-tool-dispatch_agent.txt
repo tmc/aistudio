@@ -1,0 +1,37 @@
+# Test for dispatch_agent tool
+# Tool should be on the PATH
+
+# Test basic agent dispatch
+exec aistudio-tool-dispatch_agent '{
+  "prompt": "Find files containing the word test in the current directory"
+}'
+stdout 'AGENT DISPATCH STARTED'
+stdout 'Task: Find files containing the word test in the current directory'
+stdout 'Agent thinking process:'
+stdout 'Available tools for this agent:'
+stdout '- View:'
+stdout '- GlobTool:'
+stdout '- GrepTool:'
+stdout '- LS:'
+stdout 'Executing agent...'
+stdout 'AGENT RESPONSE:'
+stdout 'I've completed the task:'
+
+# Test complex agent task
+exec aistudio-tool-dispatch_agent '{
+  "prompt": "Analyze the structure of this project and identify the main source files"
+}'
+stdout 'AGENT DISPATCH STARTED'
+stdout 'Task: Analyze the structure of this project and identify the main source files'
+stdout 'Agent used tools:'
+stdout 'Agent execution completed successfully.'
+
+# Test with empty prompt (should fail)
+! exec aistudio-tool-dispatch_agent '{
+  "prompt": ""
+}'
+stdout 'Error: prompt parameter is required'
+
+# Test missing required parameter
+! exec aistudio-tool-dispatch_agent '{}'
+stdout 'Error: prompt parameter is required'

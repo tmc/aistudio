@@ -1,0 +1,84 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-ReadNotebook
+#
+# Reads a Jupyter notebook (.ipynb file) and returns all cells with their outputs.
+# 
+# Parameters:
+#   - notebook_path: Absolute path to the Jupyter notebook file (required)
+#
+# Example:
+#   {"notebook_path": "/home/user/analysis.ipynb"}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+notebook_path=$(echo "$*" | jq -r '.notebook_path')
+
+# Validate input
+if [ -z "$notebook_path" ] || [ "$notebook_path" == "null" ]; then
+  echo "Error: notebook_path parameter is required"
+  exit 1
+fi
+
+# Check if file exists
+if [ ! -f "$notebook_path" ]; then
+  echo "Error: Notebook file does not exist: $notebook_path"
+  exit 1
+fi
+
+# Check if file has .ipynb extension
+if [[ "$notebook_path" != *.ipynb ]]; then
+  echo "Error: File doesn't appear to be a Jupyter notebook (should have .ipynb extension)"
+  exit 1
+fi
+
+# Check if file is a valid JSON file
+if ! jq -e . "$notebook_path" > /dev/null 2>&1; then
+  echo "Error: File is not a valid JSON file"
+  exit 1
+fi
+
+# Extract notebook metadata
+echo "Notebook: $(basename "$notebook_path")"
+notebook_metadata=$(jq -r '.metadata // {} | to_entries | map("\(.key): \(.value)") | join(", ")' "$notebook_path")
+kernel_name=$(jq -r '.metadata.kernelspec.name // "unknown"' "$notebook_path")
+echo "Kernel: $kernel_name"
+echo "Metadata: $notebook_metadata"
+
+# Get cell count
+cell_count=$(jq '.cells | length' "$notebook_path")
+echo "Contains $cell_count cells"
+
+# Use jq to extract and format notebook content
+formatted_output=$(jq -r '
+  .cells[] | 
+  "## Cell " + (if .cell_type then .cell_type else "unknown" end) + " (" + 
+  (if .execution_count then "execution_count: " + (.execution_count|tostring) else "Not executed" end) + "):\n\n```" + 
+  (if .cell_type == "code" then "python" else "markdown" end) + "\n" + 
+  (.source | if type=="array" then join("") else . end) + 
+  "\n```\n\nOutput:\n" + 
+  (if .outputs and (.outputs|length > 0) then 
+    (.outputs | map(
+      if .output_type == "stream" then 
+        "Stream (" + .name + "):\n```\n" + (.text | if type=="array" then join("") else . end) + "\n```"
+      elif .output_type == "execute_result" then 
+        "Result:\n```\n" + (.data."text/plain" | if type=="array" then join("") else . end) + "\n```"
+      elif .output_type == "display_data" then 
+        "Display Data:\n```\n" + ((.data."text/plain" // ["<Display data>"]) | if type=="array" then join("") else . end) + "\n```"
+      elif .output_type == "error" then 
+        "Error:\n```\n" + .ename + ": " + .evalue + "\n" + (.traceback | join("\n")) + "\n```"
+      else 
+        "Unknown output type: " + .output_type
+      end
+    ) | join("\n\n"))
+  else 
+    "No output" 
+  end) + 
+  "\n---\n" 
+' "$notebook_path")
+
+# Display the formatted output
+echo "$formatted_output"

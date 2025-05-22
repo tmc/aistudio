@@ -1,0 +1,64 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-Replace
+#
+# Tool for writing content to a file, completely replacing any existing content.
+# 
+# Parameters:
+#   - file_path: Absolute path to the file to write (required)
+#   - content: Content to write to the file (required)
+#
+# Example:
+#   {"file_path": "/home/user/new_file.txt", "content": "Hello, world!"}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+file_path=$(echo "$*" | jq -r '.file_path')
+content=$(echo "$*" | jq -r '.content')
+
+# Validate input
+if [ -z "$file_path" ] || [ "$file_path" == "null" ]; then
+  echo "Error: file_path parameter is required"
+  exit 1
+fi
+
+if [ -z "$content" ] && [ "$content" != "null" ]; then
+  echo "Warning: Writing empty content to file"
+fi
+
+# Create a backup of the existing file if it exists
+if [ -f "$file_path" ]; then
+  backup_file="${file_path}.bak-$(date +%s)"
+  cp "$file_path" "$backup_file"
+  echo "Created backup at: $backup_file"
+fi
+
+# Check if parent directory exists
+parent_dir=$(dirname "$file_path")
+if [ ! -d "$parent_dir" ]; then
+  echo "Warning: Parent directory '$parent_dir' does not exist, attempting to create it"
+  mkdir -p "$parent_dir"
+fi
+
+# Create a temp file for content
+content_file=$(mktemp)
+
+# Write content to temp file
+echo "$content" > "$content_file"
+
+# Replace/create the file
+echo "Writing to file: $file_path"
+ctx-exec "cp \"$content_file\" \"$file_path\""
+echo "File written successfully, $(wc -l < "$file_path") line(s), $(wc -c < "$file_path") bytes"
+
+# Clean up temp file
+rm -f "$content_file"
+
+# Show summary of file if it's a reasonable size
+if [ -f "$file_path" ] && [ "$(wc -l < "$file_path")" -lt 10 ]; then
+  echo "File preview:"
+  cat -n "$file_path"
+fi

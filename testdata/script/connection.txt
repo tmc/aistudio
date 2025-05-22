@@ -1,0 +1,14 @@
+# Connection test script
+env AISTUDIO_AUDIO_TRACE=1
+env DEBUG_AISTUDIO=1
+env AISTUDIO_VERBOSE=1
+
+# Test connection setup
+! exec aistudio --api-key INVALID_KEY_TO_FORCE_ERROR
+stdout 'Error: Failed to establish initial connection'
+! stdout 'Using default HTTP client'
+stdout 'Using gRPC-specific options with keepalive'
+
+# Now test with proper integration (this requires a real key, which we mock for testing)
+exec aistudio --api-key MOCK_FOR_TEST --model models/gemini-1.5-flash
+! stdout 'WithHTTPClient is incompatible with gRPC dial options'

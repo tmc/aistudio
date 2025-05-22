@@ -1,0 +1,48 @@
+# Test for LS tool
+# Tool should be on the PATH
+
+# Setup test directory structure
+exec mkdir -p lsdir/subdir1
+exec mkdir -p lsdir/subdir2
+exec touch lsdir/file1.txt
+exec touch lsdir/file2.md
+exec touch lsdir/subdir1/file3.txt
+exec touch lsdir/hidden.file
+exec touch lsdir/.hiddenfile
+exists lsdir/file1.txt
+exists lsdir/file2.md
+exists lsdir/subdir1/file3.txt
+exists lsdir/hidden.file
+exists lsdir/.hiddenfile
+
+# Test basic directory listing
+exec aistudio-tool-LS '{"path": "lsdir"}'
+stdout 'Listing directory: lsdir'
+stdout 'lsdir/file1.txt'
+stdout 'lsdir/file2.md'
+stdout 'lsdir/hidden.file'
+stdout 'lsdir/.hiddenfile'
+stdout 'lsdir/subdir1'
+stdout 'lsdir/subdir2'
+
+# Test with ignore patterns
+exec aistudio-tool-LS '{"path": "lsdir", "ignore": ["*.md", "*hidden*"]}'
+stdout 'Listing directory: lsdir'
+stdout 'lsdir/file1.txt'
+stdout 'lsdir/subdir1'
+stdout 'lsdir/subdir2'
+! stdout 'lsdir/file2.md'
+! stdout 'lsdir/hidden.file'
+! stdout 'lsdir/.hiddenfile'
+
+# Test listing a non-existent directory (should fail)
+! exec aistudio-tool-LS '{"path": "nonexistentdir"}'
+stdout 'Error: Directory does not exist'
+
+# Test listing a file instead of a directory (should fail)
+! exec aistudio-tool-LS '{"path": "lsdir/file1.txt"}'
+stdout 'Error: Not a directory'
+
+# Test missing required parameter
+! exec aistudio-tool-LS '{}'
+stdout 'Error: path parameter is required'

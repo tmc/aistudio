@@ -1,0 +1,26 @@
+# Test for Bash tool
+# Tool should be on the PATH
+
+# Test basic command execution
+exec aistudio-tool-Bash '{"command": "echo Hello World", "description": "Echo greeting"}'
+stdout 'Executing: echo Hello World'
+stdout 'Description: Echo greeting'
+stdout 'Hello World'
+
+# Test file creation
+exec aistudio-tool-Bash '{"command": "echo Test content > test-file.txt", "description": "Create test file"}'
+stdout 'Executing: echo Test content > test-file.txt'
+exists test-file.txt
+
+# Test with timeout
+exec aistudio-tool-Bash '{"command": "echo Testing timeout", "timeout": 2000, "description": "Command with timeout"}'
+stdout 'Timeout: 2000ms'
+stdout 'Testing timeout'
+
+# Test banned command (should fail)
+! exec aistudio-tool-Bash '{"command": "curl example.com"}'
+stdout 'Error: Command .* is not allowed for security reasons'
+
+# Test missing required parameter
+! exec aistudio-tool-Bash '{}'
+stdout 'Error: command parameter is required'

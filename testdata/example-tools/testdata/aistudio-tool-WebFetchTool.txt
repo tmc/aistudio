@@ -1,0 +1,46 @@
+# Test for WebFetchTool
+# Tool should be on the PATH
+
+# Setup local web server for testing
+exec echo '<html><body><h1>Test Page</h1><p>This is test content for WebFetchTool.</p></body></html>' > testpage.html
+exec python -m http.server 8999 --bind 127.0.0.1 &
+sleep 1
+# Save the PID for cleanup
+exec bash -c 'echo $! > server.pid'
+
+# Test basic fetch
+exec aistudio-tool-WebFetchTool '{
+  "url": "http://127.0.0.1:8999/testpage.html",
+  "prompt": "Summarize this page"
+}'
+stdout 'Fetching content from: http://127.0.0.1:8999/testpage.html'
+stdout 'Processing with prompt: Summarize this page'
+stdout 'Test Page'
+stdout 'test content'
+
+# Test with HTTPS upgrade
+exec aistudio-tool-WebFetchTool '{
+  "url": "http://example.com",
+  "prompt": "Extract the main heading"
+}'
+stdout 'Upgraded URL to HTTPS: https://example.com'
+stdout 'Fetching content from: https://example.com'
+stdout 'Processing with prompt: Extract the main heading'
+
+# Test with invalid URL (should fail)
+! exec aistudio-tool-WebFetchTool '{
+  "url": "not-a-url",
+  "prompt": "Extract content"
+}'
+stdout 'Error: Invalid URL'
+
+# Test missing required parameters
+! exec aistudio-tool-WebFetchTool '{}'
+stdout 'Error: url and prompt parameters are required'
+
+! exec aistudio-tool-WebFetchTool '{"url": "https://example.com"}'
+stdout 'Error: prompt parameter is required'
+
+# Clean up local web server
+exec bash -c 'kill $(cat server.pid)'
+rm server.pid

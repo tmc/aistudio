@@ -1,0 +1,51 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-Bash
+#
+# Executes a given bash command in a persistent shell session with optional timeout.
+# 
+# Parameters:
+#   - command: The command to execute (required)
+#   - timeout: Optional timeout in milliseconds (max 600000)
+#   - description: Optional description of what the command does
+#
+# Example:
+#   {"command": "ls -la", "description": "List files with details"}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+command=$(echo "$*" | jq -r '.command')
+timeout=$(echo "$*" | jq -r 'if has("timeout") then .timeout else 0 end')
+description=$(echo "$*" | jq -r 'if has("description") then .description else "" end')
+
+# Validate input
+if [ -z "$command" ] || [ "$command" == "null" ]; then
+  echo "Error: command parameter is required"
+  exit 1
+fi
+
+# Security check - banned commands
+banned_commands="alias|curl|curlie|wget|axel|aria2c|nc|telnet|lynx|w3m|links|httpie|xh|http-prompt|chrome|firefox|safari"
+if echo "$command" | grep -E "^($banned_commands)" > /dev/null; then
+  echo "Error: Command '$command' is not allowed for security reasons"
+  exit 1
+fi
+
+# Log execution information
+echo "Executing: $command"
+if [ -n "$description" ] && [ "$description" != "null" ]; then
+  echo "Description: $description"
+fi
+
+if [ "$timeout" -gt 0 ] && [ "$timeout" -le 600000 ]; then
+  echo "Timeout: ${timeout}ms"
+  # Convert milliseconds to seconds for timeout command
+  timeout_sec=$(echo "scale=1; $timeout/1000" | bc)
+  ctx-exec "timeout $timeout_sec $command"
+else
+  # Execute without timeout
+  ctx-exec "$command"
+fi

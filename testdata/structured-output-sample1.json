@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "properties": {
+    "thinking": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "meta-thinking": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "response": {
+      "type": "string"
+    },
+    "hidden-thoughts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "thinking",
+    "meta-thinking",
+    "response",
+    "hidden-thoughts"
+  ],
+  "propertyOrdering": [
+    "meta-thinking",
+    "thinking"
+  ]
+}

@@ -1,0 +1,68 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-View
+#
+# Reads a file from the local filesystem with line numbers.
+# 
+# Parameters:
+#   - file_path: The absolute path to the file to read (required)
+#   - offset: Optional line number to start reading from
+#   - limit: Optional number of lines to read
+#
+# Example:
+#   {"file_path": "/home/user/code.py", "offset": 10, "limit": 20}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+file_path=$(echo "$*" | jq -r '.file_path')
+offset=$(echo "$*" | jq -r 'if has("offset") then .offset else 0 end')
+limit=$(echo "$*" | jq -r 'if has("limit") then .limit else 2000 end')
+
+# Validate input
+if [ -z "$file_path" ] || [ "$file_path" == "null" ]; then
+  echo "Error: file_path parameter is required"
+  exit 1
+fi
+
+# Check if file exists
+if [ ! -f "$file_path" ] && [ ! -d "$file_path" ]; then
+  echo "Error: File '$file_path' does not exist or is not accessible"
+  exit 1
+fi
+
+# Handle directories
+if [ -d "$file_path" ]; then
+  echo "Error: Path '$file_path' is a directory, not a file"
+  echo "Use the LS tool to list directory contents"
+  exit 1
+fi
+
+# Check file format to determine how to display it
+file_type=$(file -b --mime-type "$file_path")
+
+# Handle binary files or images
+if [[ "$file_type" == image/* ]]; then
+  echo "This is an image file. Using file info instead of content:"
+  ctx-exec "file \"$file_path\""
+  exit 0
+elif [[ "$file_type" == application/octet-stream ]] || [[ "$file_type" == application/x-executable ]]; then
+  echo "This is a binary file. Using file info instead of content:"
+  ctx-exec "file \"$file_path\""
+  exit 0
+elif [[ "$file_path" == *.ipynb ]]; then
+  echo "This is a Jupyter notebook. Please use ReadNotebook tool instead."
+  exit 1
+fi
+
+# Handle offset and limit
+if [ "$offset" -gt 0 ] && [ "$limit" -gt 0 ]; then
+  # Calculate the ending line
+  end_line=$((offset + limit))
+  ctx-exec "cat -n \"$file_path\" | sed -n \"${offset},${end_line}p\""
+else
+  # Just use cat with line numbers, default limit applied
+  ctx-exec "cat -n \"$file_path\" | head -n $limit"
+fi

@@ -1,0 +1,60 @@
+# Test for BatchTool
+# Tool should be on the PATH
+
+# Setup files for testing
+exec echo 'Test content for file1' > file1.txt
+exec echo 'Test content for file2' > file2.txt
+exists file1.txt
+exists file2.txt
+
+# Test basic batch operation with multiple invocations
+exec aistudio-tool-BatchTool '{
+  "description": "Read multiple files",
+  "invocations": [
+    {
+      "tool_name": "View",
+      "input": {
+        "file_path": "file1.txt"
+      }
+    },
+    {
+      "tool_name": "View",
+      "input": {
+        "file_path": "file2.txt"
+      }
+    }
+  ]
+}'
+stdout 'Test content for file1'
+stdout 'Test content for file2'
+
+# Test batch operation with mixed tools
+exec aistudio-tool-BatchTool '{
+  "description": "Mixed tool operations",
+  "invocations": [
+    {
+      "tool_name": "Bash",
+      "input": {
+        "command": "echo Hello from Bash"
+      }
+    },
+    {
+      "tool_name": "GlobTool",
+      "input": {
+        "pattern": "*.txt"
+      }
+    }
+  ]
+}'
+stdout 'Hello from Bash'
+stdout 'Found .* matching files'
+stdout 'file1.txt'
+stdout 'file2.txt'
+
+# Test missing required parameter
+! exec aistudio-tool-BatchTool '{}'
+stdout 'invocations.*required'
+
+# Test with empty invocations list
+! exec aistudio-tool-BatchTool '{"description": "Empty batch", "invocations": []}'
+stdout 'at least one tool invocation'

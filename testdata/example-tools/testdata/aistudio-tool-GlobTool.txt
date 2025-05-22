@@ -1,0 +1,45 @@
+# Test for GlobTool
+# Tool should be on the PATH
+
+# Setup test directory structure
+exec mkdir -p testdir/subdir1
+exec mkdir -p testdir/subdir2
+exec touch testdir/file1.txt
+exec touch testdir/file2.md
+exec touch testdir/subdir1/file3.txt
+exec touch testdir/subdir2/file4.md
+exec touch testdir/subdir2/file5.txt
+
+# Test basic glob search in current directory
+exec aistudio-tool-GlobTool '{"pattern": "*.txt"}'
+stdout 'Searching for files matching pattern: \*.txt'
+stdout 'In directory: \.'
+stdout 'Found .* matching files'
+
+# Test glob search in specified directory
+exec aistudio-tool-GlobTool '{"pattern": "*.txt", "path": "testdir"}'
+stdout 'Searching for files matching pattern: \*.txt'
+stdout 'In directory: testdir'
+stdout 'testdir/file1.txt'
+! stdout 'testdir/file2.md'
+
+# Test recursive glob search
+exec aistudio-tool-GlobTool '{"pattern": "**/*.txt", "path": "testdir"}'
+stdout 'Searching for files matching pattern: \*\*/\*.txt'
+stdout 'In directory: testdir'
+stdout 'testdir/file1.txt'
+stdout 'testdir/subdir1/file3.txt'
+stdout 'testdir/subdir2/file5.txt'
+! stdout '.*\.md'
+
+# Test glob search with no matches
+exec aistudio-tool-GlobTool '{"pattern": "*.xyz", "path": "testdir"}'
+stdout 'No files found matching pattern: \*.xyz'
+
+# Test search in non-existent directory (should fail)
+! exec aistudio-tool-GlobTool '{"pattern": "*.txt", "path": "nonexistent"}'
+stdout 'Warning: Directory .* does not exist or is not accessible'
+
+# Test missing required parameter
+! exec aistudio-tool-GlobTool '{}'
+stdout 'Error: pattern parameter is required'

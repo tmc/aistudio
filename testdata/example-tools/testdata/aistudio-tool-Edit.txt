@@ -1,0 +1,75 @@
+# Test for Edit tool
+# Tool should be on the PATH
+
+# Setup test file
+exec echo 'function addNumbers(a, b) {' > editfile.js
+exec echo '  // Add two numbers' >> editfile.js
+exec echo '  return a + b;' >> editfile.js
+exec echo '}' >> editfile.js
+exec echo '' >> editfile.js
+exec echo 'function multiplyNumbers(a, b) {' >> editfile.js
+exec echo '  // Multiply two numbers' >> editfile.js
+exec echo '  return a * b;' >> editfile.js
+exec echo '}' >> editfile.js
+exists editfile.js
+
+# Test basic edit with unique string
+exec aistudio-tool-Edit '{
+  "file_path": "editfile.js",
+  "old_string": "function addNumbers(a, b) {\n  // Add two numbers\n  return a + b;\n}",
+  "new_string": "function addNumbers(a, b) {\n  // Add two numbers\n  const sum = a + b;\n  return sum;\n}"
+}'
+stdout 'Successfully edited file: editfile.js'
+stdout 'Replaced 1 occurrence'
+
+# Verify the file was changed correctly
+exec aistudio-tool-View '{"file_path": "editfile.js"}'
+stdout 'const sum = a \+ b;'
+stdout 'return sum;'
+! stdout 'return a \+ b;'
+stdout 'function multiplyNumbers'
+
+# Test edit with expected replacements
+exec aistudio-tool-Edit '{
+  "file_path": "editfile.js",
+  "old_string": "// ",
+  "new_string": "// TODO: ",
+  "expected_replacements": 2
+}'
+stdout 'Successfully edited file: editfile.js'
+stdout 'Replaced 2 occurrences'
+
+# Verify multiple replacements
+exec aistudio-tool-View '{"file_path": "editfile.js"}'
+stdout '// TODO: Add two numbers'
+stdout '// TODO: Multiply two numbers'
+
+# Test creating a new file
+exec aistudio-tool-Edit '{
+  "file_path": "newfile.txt",
+  "old_string": "",
+  "new_string": "This is a new file created with the Edit tool."
+}'
+stdout 'Successfully created file: newfile.txt'
+exists newfile.txt
+
+# Test replacement that doesn't exist (should fail)
+! exec aistudio-tool-Edit '{
+  "file_path": "editfile.js",
+  "old_string": "This string doesn't exist",
+  "new_string": "New content"
+}'
+stdout 'Error: No occurrences found'
+
+# Test expected_replacements mismatch (should fail)
+! exec aistudio-tool-Edit '{
+  "file_path": "editfile.js",
+  "old_string": "return",
+  "new_string": "RETURN",
+  "expected_replacements": 1
+}'
+stdout 'Error: Found .* occurrences but expected 1'
+
+# Test missing required parameters
+! exec aistudio-tool-Edit '{}'
+stdout 'Error: file_path, old_string, and new_string parameters are required'

@@ -1,0 +1,49 @@
+# Test for GrepTool
+# Tool should be on the PATH
+
+# Setup test files with content
+exec echo 'This is a test file with some text to search.' > test1.txt
+exec echo 'Another file with different content.' > test2.txt
+exec echo 'This file has the word function in it.' > test3.js
+exec echo 'function testFunc() { return true; }' > test4.js
+exists test1.txt
+exists test2.txt
+exists test3.js
+exists test4.js
+
+# Test basic pattern search
+exec aistudio-tool-GrepTool '{"pattern": "test"}'
+stdout 'Searching for pattern: test'
+stdout 'test1.txt'
+stdout 'test3.js'
+
+# Test with file pattern inclusion
+exec aistudio-tool-GrepTool '{"pattern": "function", "include": "*.js"}'
+stdout 'Searching for pattern: function'
+stdout 'Filtering by file pattern: \*.js'
+stdout 'test3.js'
+stdout 'test4.js'
+! stdout 'test1.txt'
+
+# Test with directory path
+exec mkdir -p grepdir
+exec echo 'Content in subdirectory' > grepdir/subfile.txt
+exec aistudio-tool-GrepTool '{"pattern": "Content", "path": "grepdir"}'
+stdout 'Searching for pattern: Content'
+stdout 'In directory: grepdir'
+stdout 'grepdir/subfile.txt'
+! stdout 'test1.txt'
+
+# Test with regex pattern
+exec aistudio-tool-GrepTool '{"pattern": "function\\s+\\w+"}'
+stdout 'Searching for pattern: function\\s+\\w+'
+stdout 'test4.js'
+! stdout 'test3.js'
+
+# Test with no matches
+exec aistudio-tool-GrepTool '{"pattern": "nonexistentterm"}'
+stdout 'No matches found for pattern: nonexistentterm'
+
+# Test missing required parameter
+! exec aistudio-tool-GrepTool '{}'
+stdout 'Error: pattern parameter is required'

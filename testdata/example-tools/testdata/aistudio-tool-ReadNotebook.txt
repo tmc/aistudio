@@ -1,0 +1,35 @@
+# Test for ReadNotebook tool
+# Tool should be on the PATH
+
+# Setup a basic Jupyter notebook file
+exec aistudio-tool-Replace '{
+  "file_path": "test_notebook.ipynb",
+  "content": "{\n  \"cells\": [\n    {\n      \"cell_type\": \"markdown\",\n      \"metadata\": {},\n      \"source\": [\"# Test Notebook\\n\", \"This is a test markdown cell.\"]\n    },\n    {\n      \"cell_type\": \"code\",\n      \"execution_count\": 1,\n      \"metadata\": {},\n      \"source\": [\"# Python code cell\\n\", \"def hello():\\n\", \"    return \\\"Hello, world!\\\"\"],\n      \"outputs\": [\n        {\n          \"name\": \"stdout\",\n          \"output_type\": \"stream\",\n          \"text\": [\"Hello, world!\\n\"]\n        }\n      ]\n    }\n  ],\n  \"metadata\": {\n    \"kernelspec\": {\n      \"display_name\": \"Python 3\",\n      \"language\": \"python\",\n      \"name\": \"python3\"\n    }\n  },\n  \"nbformat\": 4,\n  \"nbformat_minor\": 4\n}"
+}'
+exists test_notebook.ipynb
+
+# Test reading notebook
+exec aistudio-tool-ReadNotebook '{"notebook_path": "test_notebook.ipynb"}'
+stdout 'Reading notebook: test_notebook.ipynb'
+stdout 'Cell 0 \(Markdown\):'
+stdout '# Test Notebook'
+stdout 'This is a test markdown cell.'
+stdout 'Cell 1 \(Code\):'
+stdout '# Python code cell'
+stdout 'def hello\(\):'
+stdout '    return "Hello, world!"'
+stdout 'Outputs:'
+stdout 'Hello, world!'
+
+# Test reading a non-existent notebook (should fail)
+! exec aistudio-tool-ReadNotebook '{"notebook_path": "nonexistent.ipynb"}'
+stdout 'Error: Could not read notebook file'
+
+# Test with invalid notebook format (create a text file with .ipynb extension)
+exec echo "Not a valid notebook" > invalid.ipynb
+! exec aistudio-tool-ReadNotebook '{"notebook_path": "invalid.ipynb"}'
+stdout 'Error: Invalid notebook format'
+
+# Test missing required parameter
+! exec aistudio-tool-ReadNotebook '{}'
+stdout 'Error: notebook_path parameter is required'

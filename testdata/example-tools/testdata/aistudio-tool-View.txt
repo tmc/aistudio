@@ -1,0 +1,51 @@
+# Test for View tool
+# Tool should be on the PATH
+
+# Setup test files
+exec echo 'Line 1 of test file' > viewtest.txt
+exec echo 'Line 2 of test file' >> viewtest.txt
+exec echo 'Line 3 of test file' >> viewtest.txt
+exec echo 'Line 4 of test file' >> viewtest.txt
+exec echo 'Line 5 of test file' >> viewtest.txt
+exists viewtest.txt
+
+# Create a large test file with numbered lines
+exec bash -c 'for i in {1..100}; do echo "Line $i of large file"; done > large.txt'
+exists large.txt
+
+# Test basic file viewing
+exec aistudio-tool-View '{"file_path": "viewtest.txt"}'
+stdout '     1	Line 1 of test file'
+stdout '     2	Line 2 of test file'
+stdout '     3	Line 3 of test file'
+stdout '     4	Line 4 of test file'
+stdout '     5	Line 5 of test file'
+
+# Test with offset
+exec aistudio-tool-View '{"file_path": "large.txt", "offset": 50}'
+stdout '    50	Line 50 of large file'
+stdout '    51	Line 51 of large file'
+! stdout '    49	Line 49 of large file'
+
+# Test with limit
+exec aistudio-tool-View '{"file_path": "large.txt", "limit": 3}'
+stdout '     1	Line 1 of large file'
+stdout '     2	Line 2 of large file'
+stdout '     3	Line 3 of large file'
+! stdout '     4	Line 4 of large file'
+
+# Test with offset and limit
+exec aistudio-tool-View '{"file_path": "large.txt", "offset": 50, "limit": 3}'
+stdout '    50	Line 50 of large file'
+stdout '    51	Line 51 of large file'
+stdout '    52	Line 52 of large file'
+! stdout '    53	Line 53 of large file'
+! stdout '    49	Line 49 of large file'
+
+# Test viewing a non-existent file (should fail)
+! exec aistudio-tool-View '{"file_path": "nonexistent.txt"}'
+stdout 'Error: Could not read file'
+
+# Test missing required parameter
+! exec aistudio-tool-View '{}'
+stdout 'Error: file_path parameter is required'

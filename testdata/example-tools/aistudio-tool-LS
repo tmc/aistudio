@@ -1,0 +1,59 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-LS
+#
+# Lists files and directories in a given path.
+# 
+# Parameters:
+#   - path: The absolute path to the directory to list (required)
+#   - ignore: Optional list of glob patterns to ignore
+#
+# Example:
+#   {"path": "/home/user/projects", "ignore": ["*.log", "node_modules"]}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+sleep $((RANDOM % 3 + 1))
+
+# Parse input JSON
+path=$(echo "$*" | jq -r '.path')
+ignore_patterns=$(echo "$*" | jq -r 'if has("ignore") then .ignore[] else "" end' 2>/dev/null)
+
+cmd="ls \"$path\""
+eval "${cmd}"
+exit $?
+
+
+# Validate input
+if [ -z "$path" ] || [ "$path" == "null" ]; then
+  echo "Error: path parameter is required"
+  exit 1
+fi
+
+# Check if path exists
+if [ ! -d "$path" ]; then
+  echo "Warning: Directory '$path' does not exist or is not accessible"
+fi
+
+# Build ignore pattern string for ls command
+ignore_args=""
+if [ -n "$ignore_patterns" ]; then
+  # Convert ignore patterns to ls compatible format
+  for pattern in $ignore_patterns; do
+    if [ -n "$pattern" ] && [ "$pattern" != "null" ]; then
+      ignore_args="$ignore_args | grep -v \"$pattern\""
+    fi
+  done
+fi
+
+# Execute ls with color and human-readable sizes
+if [ -n "$ignore_args" ]; then
+  # Use ignore patterns with grep
+  cmd="ls -lha --color=always \"$path\" $ignore_args"
+  eval "ctx-exec \"$cmd\""
+else
+  # Simple ls without ignore patterns
+  ctx-exec "ls -lha --color=always \"$path\""
+fi

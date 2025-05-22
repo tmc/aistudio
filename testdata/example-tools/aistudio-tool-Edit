@@ -1,0 +1,103 @@
+#!/bin/bash
+#==============================================================================
+# aistudio-tool-Edit
+#
+# Tool for editing files by replacing text or creating new files.
+# 
+# Parameters:
+#   - file_path: Absolute path to the file to modify (required)
+#   - old_string: Text to replace (required, empty for new file creation)
+#   - new_string: Text to replace with (required)
+#   - expected_replacements: Number of replacements to perform (optional, default: 1)
+#
+# Example:
+#   {"file_path": "/home/user/code.js", "old_string": "function old()", "new_string": "function new()", "expected_replacements": 1}
+#==============================================================================
+
+set -e  # Exit on error
+set -o pipefail  # Pipe failures are treated as command failures
+
+# Parse input JSON
+file_path=$(echo "$*" | jq -r '.file_path')
+old_string=$(echo "$*" | jq -r '.old_string')
+new_string=$(echo "$*" | jq -r '.new_string')
+expected_replacements=$(echo "$*" | jq -r 'if has("expected_replacements") then .expected_replacements | tostring else "1" end')
+
+# Validate input
+if [ -z "$file_path" ] || [ "$file_path" == "null" ]; then
+  echo "Error: file_path parameter is required"
+  exit 1
+fi
+
+if [ "$old_string" == "null" ]; then
+  old_string=""
+fi
+
+if [ -z "$new_string" ] || [ "$new_string" == "null" ]; then
+  echo "Error: new_string parameter is required"
+  exit 1
+fi
+
+# Create a backup of the existing file if it exists
+if [ -f "$file_path" ]; then
+  backup_file="${file_path}.bak-$(date +%s)"
+  cp "$file_path" "$backup_file"
+  echo "Created backup at: $backup_file"
+fi
+
+# Create temp files for old and new strings
+old_file=$(mktemp)
+new_file=$(mktemp)
+
+# Write strings to temp files
+echo "$old_string" > "$old_file"
+echo "$new_string" > "$new_file"
+
+# Check if parent directory exists for the target file
+parent_dir=$(dirname "$file_path")
+if [ ! -d "$parent_dir" ]; then
+  echo "Warning: Parent directory '$parent_dir' does not exist, attempting to create it"
+  mkdir -p "$parent_dir"
+fi
+
+# If old_string is empty, it means we're creating a new file
+if [ -z "$old_string" ]; then
+  echo "Creating new file: $file_path"
+  ctx-exec "cp \"$new_file\" \"$file_path\""
+  echo "New file created successfully"
+else
+  # Count occurrences of old_string in the file
+  if [ -f "$file_path" ]; then
+    echo "Editing existing file: $file_path"
+    
+    # Use perl to count and replace
+    count_cmd="perl -0777 -e '\$c=()=\$_=~s/$(printf '%s' "$old_string" | sed 's/\//\\\//g')/$(printf '%s' "$new_string" | sed 's/\//\\\//g')/gs;print \$c;' \"$file_path\""
+    count=$(eval "$count_cmd")
+    
+    # Check if count matches expected replacements
+    if [ "$count" -eq "$expected_replacements" ]; then
+      # Perform the actual replacement
+      replace_cmd="perl -0777 -i -e 's/$(printf '%s' "$old_string" | sed 's/\//\\\//g')/$(printf '%s' "$new_string" | sed 's/\//\\\//g')/gs;' \"$file_path\""
+      eval "$replace_cmd"
+      echo "Made $count replacements in $file_path"
+      
+      # Show a diff of what changed
+      echo "Changes made:"
+      ctx-exec "diff -u \"$backup_file\" \"$file_path\" || true"
+    else
+      echo "Error: Expected $expected_replacements replacements, but found $count occurrences"
+      echo "No changes were made to the file"
+      # Remove backup since no changes were made
+      rm -f "$backup_file"
+      exit 1
+    fi
+  else
+    echo "Error: File $file_path does not exist for editing"
+    # Remove backup since no changes were made
+    rm -f "$backup_file"
+    exit 1
+  fi
+fi
+
+# Clean up temp files
+rm -f "$old_file" "$new_file"
