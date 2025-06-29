@@ -9,3 +9,7 @@ api/testdata/
 !testdata/script/
 
 **/.claude/settings.local.json
+aistudio_ui_test
+gemini-cli/
+coverage.html
+coverage_new.out
