@@ -71,7 +71,7 @@ type Client struct {
 	GenerativeClientAlpha *languagealpha.GenerativeClient // For v1alpha
 	VertexAIClient        *vertexai.Client
 	VertexModelsClient    *aiplatform.ModelClient
-	GrokHTTPClient        *http.Client    // HTTP client for Grok API
+	GrokHTTPClient        *http.Client      // HTTP client for Grok API
 	httpTransport         http.RoundTripper // Custom HTTP transport for testing
 }
 
@@ -272,7 +272,7 @@ func (c *Client) InitVertexAIClient(ctx context.Context) error {
 	c.VertexModelsClient = modelsClient
 
 	totalElapsed := time.Since(start)
-	log.Printf("[DEBUG] Initialized Vertex AI clients for project %s in %s (total: %v)", 
+	log.Printf("[DEBUG] Initialized Vertex AI clients for project %s in %s (total: %v)",
 		c.ProjectID, c.Location, totalElapsed)
 	return nil
 }
@@ -1061,46 +1061,69 @@ func (e *RetryableError) IsRetryable() bool {
 
 // Retry retries the operation with exponential backoff.
 func (e *RetryableError) Retry(ctx context.Context, op func() error) error {
+	// First check if we can retry
 	if !e.IsRetryable() {
 		return e.Err
 	}
 
-	// Add jitter to the backoff time (±10%)
-	jitter := float64(e.Backoff) * 0.1 * (2*rand.Float64() - 1)
-	backoffWithJitter := e.Backoff + time.Duration(jitter)
-	if backoffWithJitter < 0 {
-		backoffWithJitter = e.Backoff // Ensure backoff is never negative
-	}
-
-	// Use a timer for backoff that respects context
-	timer := time.NewTimer(backoffWithJitter)
-	defer timer.Stop()
-
+	// Check context before first attempt
 	select {
 	case <-ctx.Done():
-		// Context was canceled or timed out
 		return ctx.Err()
-	case <-timer.C:
-		// Backoff time elapsed, proceed with retry
+	default:
 	}
 
-	e.Retries++
-	e.Backoff *= 2 // Exponential backoff
-
+	// First attempt (not counted as a retry)
 	err := op()
-	if err != nil {
-		if clientErr, ok := err.(*ClientError); ok && clientErr.IsRetryable() {
-			return &RetryableError{
-				Err:        err,
-				Retries:    e.Retries,
-				MaxRetries: e.MaxRetries,
-				Backoff:    e.Backoff,
-			}
-		}
-		return err
+	if err == nil {
+		return nil
 	}
 
-	return nil
+	// Check if error is retryable
+	if clientErr, ok := err.(*ClientError); !ok || !clientErr.IsRetryable() {
+		return err // Non-retryable error
+	}
+
+	// Now do retries
+	for e.Retries < e.MaxRetries {
+		// Add jitter to the backoff time (±10%)
+		jitter := float64(e.Backoff) * 0.1 * (2*rand.Float64() - 1)
+		backoffWithJitter := e.Backoff + time.Duration(jitter)
+		if backoffWithJitter < 0 {
+			backoffWithJitter = e.Backoff // Ensure backoff is never negative
+		}
+
+		// Use a timer for backoff that respects context
+		timer := time.NewTimer(backoffWithJitter)
+
+		select {
+		case <-ctx.Done():
+			// Context was canceled or timed out
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+			// Backoff time elapsed, proceed with retry
+		}
+		timer.Stop()
+
+		e.Retries++
+		e.Backoff *= 2 // Exponential backoff
+
+		err = op()
+		if err == nil {
+			return nil // Success
+		}
+
+		// Update the error
+		e.Err = err
+
+		// Check if we should continue retrying
+		if clientErr, ok := err.(*ClientError); !ok || !clientErr.IsRetryable() {
+			return err // Non-retryable error
+		}
+	}
+
+	return e.Err // Max retries exceeded
 }
 
 // quickModelValidation is a simple validation that avoids API calls

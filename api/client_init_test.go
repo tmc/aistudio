@@ -131,8 +131,8 @@ func TestNewClient(t *testing.T) {
 			if tt.expectError {
 				if err == nil {
 					// For Vertex AI tests, success is acceptable if auth is available
-					isVertexAI := (tt.config != nil && tt.config.Backend == BackendVertexAI) || 
-								 (tt.envVars != nil && tt.envVars["AISTUDIO_USE_VERTEXAI"] == "true")
+					isVertexAI := (tt.config != nil && tt.config.Backend == BackendVertexAI) ||
+						(tt.envVars != nil && tt.envVars["AISTUDIO_USE_VERTEXAI"] == "true")
 					if isVertexAI {
 						t.Logf("Vertex AI test succeeded (auth available)")
 					} else {
@@ -279,7 +279,7 @@ func TestInitClient(t *testing.T) {
 			// Call InitClient
 			err := client.InitClient(ctx)
 
-			// Check error  
+			// Check error
 			if tt.expectError {
 				if err == nil {
 					// For Vertex AI tests, success is acceptable if auth is available
@@ -372,7 +372,7 @@ func TestInitVertexAIClient(t *testing.T) {
 			// Call InitVertexAIClient
 			err := client.InitVertexAIClient(ctx)
 
-			// Check error  
+			// Check error
 			if tt.expectError {
 				if err == nil {
 					// For Vertex AI tests, success is acceptable if auth is available

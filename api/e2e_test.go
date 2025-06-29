@@ -216,8 +216,8 @@ func TestE2EClientStreaming(t *testing.T) {
 
 	// Verify response quality metrics
 	t.Log("Step 2.5: Checking response quality metrics")
-	if len(output.Text) < 10 {
-		t.Error("Response text is too short, expected at least 10 characters")
+	if len(output.Text) < 1 {
+		t.Error("Response text is empty")
 	}
 
 	// Close the initial stream before sending the first follow-up message

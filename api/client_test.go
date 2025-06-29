@@ -16,7 +16,7 @@ func init() {
 	// Set an environment variable to signal we're in testing mode
 	// This will be checked in various parts of the code to adapt behavior
 	os.Setenv("AISTUDIO_TESTING", "1")
-	log.Printf("Test mode enabled: Using testing-specific configurations")
+	// Note: Logging is now handled by SetupTestLogging in individual tests
 }
 
 // InitBidiStreamTest is a test-specific implementation that returns a StreamGenerateContent client

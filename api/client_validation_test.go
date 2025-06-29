@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	languagealpha "cloud.google.com/go/ai/generativelanguage/apiv1alpha"
 )
 
 func TestQuickModelValidation(t *testing.T) {
@@ -100,10 +102,9 @@ func TestValidateModelAlpha(t *testing.T) {
 
 			// For testing purposes, just set the client to non-nil
 			if tt.clientInit {
-				// Use a nil pointer - we just need a non-nil field for the test logic
-				client.GenerativeClientAlpha = nil
-				// Skip validation - this will still pass the "non-nil" check
-				// This is a test hack, and only works because our implementation only checks if the field is nil
+				// Create a typed nil that's non-nil at the interface level
+				// This is a test hack that works because ValidateModelAlpha only checks != nil
+				client.GenerativeClientAlpha = &languagealpha.GenerativeClient{}
 			}
 
 			valid, err := client.ValidateModelAlpha(tt.modelName)

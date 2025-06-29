@@ -42,10 +42,10 @@ type GrokChatResponse struct {
 
 // GrokResponseChoice represents a choice in the response
 type GrokResponseChoice struct {
-	Index        int                `json:"index"`
-	Message      *GrokMessage       `json:"message,omitempty"`
-	Delta        *GrokMessage       `json:"delta,omitempty"`
-	FinishReason *string            `json:"finish_reason,omitempty"`
+	Index        int          `json:"index"`
+	Message      *GrokMessage `json:"message,omitempty"`
+	Delta        *GrokMessage `json:"delta,omitempty"`
+	FinishReason *string      `json:"finish_reason,omitempty"`
 }
 
 // GrokUsage represents token usage information
@@ -184,7 +184,7 @@ func (c *Client) GrokChatStream(ctx context.Context, req *GrokChatRequest) (<-ch
 			if n > 0 {
 				data := remaining + string(buf[:n])
 				lines := strings.Split(data, "\n")
-				
+
 				// Keep the last incomplete line for next iteration
 				remaining = lines[len(lines)-1]
 				lines = lines[:len(lines)-1]
@@ -194,16 +194,16 @@ func (c *Client) GrokChatStream(ctx context.Context, req *GrokChatRequest) (<-ch
 					if line == "" || line == "data: [DONE]" {
 						continue
 					}
-					
+
 					if strings.HasPrefix(line, "data: ") {
 						jsonData := strings.TrimPrefix(line, "data: ")
-						
+
 						var chunk GrokStreamChunk
 						if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
 							// Log error but continue processing
 							continue
 						}
-						
+
 						select {
 						case chunkChan <- &chunk:
 						case <-ctx.Done():
