@@ -449,12 +449,12 @@ func WithAutoSend(delay string) Option {
 		if delay == "" {
 			return nil // No auto-send if delay is empty
 		}
-		
+
 		duration, err := time.ParseDuration(delay)
 		if err != nil {
 			return fmt.Errorf("invalid auto-send delay format: %w", err)
 		}
-		
+
 		m.autoSendDelay = duration
 		m.autoSendEnabled = true
 		return nil

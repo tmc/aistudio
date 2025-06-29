@@ -53,7 +53,7 @@ func New(opts ...Option) *Model {
 	ta.Focus()
 	ta.Prompt = "┃ "
 	ta.CharLimit = 0
-	ta.SetWidth(50)
+	ta.SetWidth(50) // Will be updated by WindowSizeMsg
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetEnabled(false)
@@ -100,6 +100,8 @@ func New(opts ...Option) *Model {
 		maxLogMessages:         10,                         // Default to storing 10 log messages
 		showLogMessages:        false,                      // Default log messages display off
 		useBidi:                true,                       // Default to using BidiGenerateContent
+		width:                  width,                      // Initialize width
+		height:                 height,                     // Initialize height
 		audioChannel:           make(chan AudioChunk, 100), // Buffer for up to 100 audio chunks
 		audioQueue:             []AudioChunk{},
 		showAudioStatus:        true,                    // Default to showing audio status
@@ -260,18 +262,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Handle different message types
 	switch msg := msg.(type) {
-	// case tea.KeyMsg:
-	// // Process common keyboard shortcuts (quit, toggle settings, etc.)
-	// return m.handleKeyMsg(msg)
+	case tea.KeyMsg:
+		// Process common keyboard shortcuts (quit, toggle settings, etc.)
+		return m.handleKeyMsg(msg)
 
 	case tea.WindowSizeMsg:
 		// Handle window resizing
+		m.width = msg.Width
+		m.height = msg.Height
 		m.viewport.Height = msg.Height - 8 // Reserve space for input and status
 		m.viewport.Width = msg.Width
 		m.textarea.SetWidth(msg.Width)
 
-		// Update UI right away
-		m.viewport.SetContent(m.renderAllMessages())
+		// UI will be updated automatically via View() call
 		return m, nil
 
 	case tea.MouseMsg:
@@ -280,9 +283,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case playbackTickMsg:
 		// Update audio playback status
-		if m.showAudioStatus && m.currentAudio != nil {
-			m.viewport.SetContent(m.renderAllMessages()) // Re-render to show updated playback status
-		}
+		// Note: UI will be updated automatically via View() call
 		return m, playbackTickCmd() // Continue ticker
 
 	case audioPlaybackStartedMsg:
@@ -292,7 +293,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages[idx].IsPlaying = true
 		}
 		m.currentAudio = &msg.chunk
-		m.viewport.SetContent(m.renderAllMessages())
 		return m, playbackTickCmd() // Start ticker for progress updates
 
 	case audioPlaybackCompletedMsg:
@@ -302,15 +302,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages[idx].IsPlaying = false
 			m.messages[idx].IsPlayed = true
 		}
-		m.viewport.SetContent(m.renderAllMessages())
 		return m, nil
 
 	case audioPlaybackErrorMsg:
 		// Handle audio playback errors
 		m.tickerRunning = false
 		m.messages = append(m.messages, formatError(fmt.Errorf("audio error: %v", msg.err)))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
 		return m, nil
 
 	case func() tea.Msg:
@@ -325,14 +322,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-send test message
 		testMessage := fmt.Sprintf("Test message sent automatically after %v delay for debugging connection stability.", m.autoSendDelay)
 		log.Printf("[DEBUG] Auto-sending test message: %s", testMessage)
-		
+
 		// Set the message in the textarea and trigger send
 		m.textarea.SetValue(testMessage)
 		m.currentState = AppStateResponding
-		
+
 		// Clear the textarea after sending
 		m.textarea.SetValue("")
-		
+
 		// Send the message
 		return m, m.sendToStreamCmd(testMessage)
 
@@ -341,11 +338,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleStreamMsg(msg)
 	}
 
-	// Handle textarea updates
-	if m.focusedComponent == "input" {
-		m.textarea, cmd = m.textarea.Update(msg)
-		cmds = append(cmds, cmd)
-	}
+	// Textarea updates are handled in handleKeyMsg to avoid double processing
 
 	// Update viewport
 	m.viewport, cmd = m.viewport.Update(msg)
@@ -709,14 +702,21 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Return early as settings panel handled the key
 		return m, tea.Batch(cmds...)
 	}
-	// else { // No need for else, handled below if not settings panel
-	// Otherwise handle key in main UI
-	// Note: Textarea update happens in the main Update function before this handler
-	// m.textarea, taCmd = m.textarea.Update(msg) // Update textarea here
-	// cmds = append(cmds, taCmd)
-	// }
+	// Update textarea if input is focused (for typing to work)
+	if m.focusedComponent == "input" {
+		var taCmd tea.Cmd
+		m.textarea, taCmd = m.textarea.Update(msg)
+		cmds = append(cmds, taCmd)
+	}
 
-	switch msg.String() {
+	// Check if this is a regular printable character that should bypass special handling
+	msgStr := msg.String()
+	if len(msgStr) == 1 && msgStr[0] >= 32 && msgStr[0] <= 126 {
+		// This is a regular printable character - just return with textarea update
+		return m, tea.Batch(cmds...)
+	}
+
+	switch msgStr {
 	// Add handlers for numbered dialog options for tool approval
 	case "y", "Y", "1": // Approve tool call (Y key or option 1)
 		if m.showToolApproval && len(m.pendingToolCalls) > 0 && m.approvalIndex < len(m.pendingToolCalls) {
@@ -765,9 +765,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.approvalIndex = 0
 			}
 
-			// Update UI
-			m.viewport.SetContent(m.renderAllMessages())
-			m.viewport.GotoBottom()
+			// UI will update automatically
 			return m, tea.Batch(cmds...)
 		}
 	case "2": // Approve tool call and don't ask again for this tool type
@@ -814,9 +812,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.approvalIndex = 0
 			}
 
-			// Update UI
-			m.viewport.SetContent(m.renderAllMessages())
-			m.viewport.GotoBottom()
+			// UI will update automatically
 			return m, tea.Batch(cmds...)
 		}
 	case "n", "N", "3", "esc": // Deny tool call (N key, option 3, or escape key)
@@ -861,10 +857,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Update UI
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 			// Update UI
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 			// Transition state after processing
 			// if m.approvalIndex >= len(m.pendingToolCalls) {
@@ -878,7 +874,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.currentState = AppStateQuitting
 		log.Println("Ctrl+C pressed, entering Quitting state.")
-		
+
 		// Shutdown streams
 		if m.stream != nil {
 			cmds = append(cmds, m.closeStreamCmd())
@@ -886,7 +882,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.bidiStream != nil {
 			cmds = append(cmds, m.closeBidiStreamCmd())
 		}
-		
+
 		// Experimental integrations disabled - moved to .wip files
 		// if m.mcpEnabled && m.mcpIntegration != nil {
 		// 	go func() {
@@ -895,7 +891,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 		}
 		// 	}()
 		// }
-		// 
+		//
 		// if m.voiceEnabled && m.voiceStreamer != nil {
 		// 	go func() {
 		// 		if err := m.voiceStreamer.Shutdown(m.rootCtx); err != nil {
@@ -903,7 +899,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 		}
 		// 	}()
 		// }
-		// 
+		//
 		// if m.videoEnabled && m.videoStreamer != nil {
 		// 	go func() {
 		// 		if err := m.videoStreamer.Shutdown(m.rootCtx); err != nil {
@@ -911,9 +907,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 		}
 		// 	}()
 		// }
-		
-		// Let the main Update loop handle tea.Quit
-		// return m, tea.Quit
+
+		// Return quit command immediately for better UX
+		cmds = append(cmds, tea.Quit)
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+s": // Toggle settings panel
@@ -934,9 +930,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Move to the next tool call
 			m.approvalIndex++
 
-			// Update UI
-			m.viewport.SetContent(m.renderAllMessages())
-			m.viewport.GotoBottom()
+			// UI will update automatically
 			return m, tea.Batch(cmds...)
 		}
 
@@ -978,7 +972,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Update UI
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		}
 		return m, tea.Batch(cmds...) // Return early
@@ -990,12 +984,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// Display available tools
 			m.messages = append(m.messages, formatMessage("System", toolsList))
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		} else {
 			// Display a message about tools being disabled
 			m.messages = append(m.messages, formatMessage("System", "Tool calling is disabled. Enable with --tools flag."))
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		}
 		return m, tea.Batch(cmds...) // Return early
@@ -1016,15 +1010,15 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 		cmds = append(cmds, m.videoStreamer.SetVideoInputMode(VideoInputNone))
 		// 	}
 		// } else {
-			// Fallback to simulation mode
-			switch m.videoInputMode {
-			case VideoInputNone:
-				m.videoInputMode = VideoInputCamera
-			case VideoInputCamera:
-				m.videoInputMode = VideoInputScreen
-			case VideoInputScreen:
-				m.videoInputMode = VideoInputNone
-			}
+		// Fallback to simulation mode
+		switch m.videoInputMode {
+		case VideoInputNone:
+			m.videoInputMode = VideoInputCamera
+		case VideoInputCamera:
+			m.videoInputMode = VideoInputScreen
+		case VideoInputScreen:
+			m.videoInputMode = VideoInputNone
+		}
 		// }
 		log.Printf("Video input toggled: %s", m.videoInputMode)
 		if m.videoInputMode != VideoInputNone {
@@ -1056,12 +1050,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// Display a message about history saving
 			m.messages = append(m.messages, formatMessage("System", "Chat history saved."))
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		} else {
 			// Display a message about history being disabled
 			m.messages = append(m.messages, formatMessage("System", "Chat history is disabled. Enable with --history flag."))
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		}
 		return m, tea.Batch(cmds...)
@@ -1085,8 +1079,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// } else {
 		m.messages = append(m.messages, formatMessage("System", "Voice input is disabled. Enable with --voice flag."))
 		// }
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+o": // Toggle voice output
@@ -1101,8 +1094,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// } else {
 		m.messages = append(m.messages, formatMessage("System", "Voice output is disabled. Enable with --voice flag."))
 		// }
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+b": // Toggle bidirectional voice
@@ -1124,8 +1116,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// } else {
 		m.messages = append(m.messages, formatMessage("System", "Voice streaming is disabled. Enable with --voice flag."))
 		// }
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+e": // Show MCP status
@@ -1133,14 +1124,14 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// if m.mcpEnabled && m.mcpIntegration != nil {
 		// 	var statusText strings.Builder
 		// 	statusText.WriteString("MCP Integration Status:\n")
-		// 	
+		//
 		// 	// Server status
 		// 	if server := m.mcpIntegration.GetMCPServer(); server != nil {
 		// 		statusText.WriteString("✓ MCP Server: Running\n")
 		// 	} else {
 		// 		statusText.WriteString("✗ MCP Server: Not running\n")
 		// 	}
-		// 	
+		//
 		// 	// Client status
 		// 	clients := m.mcpIntegration.GetMCPClients()
 		// 	statusText.WriteString(fmt.Sprintf("✓ MCP Clients: %d connected\n", len(clients)))
@@ -1151,13 +1142,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 			statusText.WriteString(fmt.Sprintf("  • %s: Disconnected\n", name))
 		// 		}
 		// 	}
-		// 	
+		//
 		// 	m.messages = append(m.messages, formatMessage("System", statusText.String()))
 		// } else {
 		m.messages = append(m.messages, formatMessage("System", "MCP integration is disabled. Enable with --mcp flag."))
 		// }
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 		return m, tea.Batch(cmds...)
 
 	case "enter": // Send message
@@ -1257,8 +1247,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			log.Printf("Client fully reset for reconnection attempt %d", m.streamRetryAttempt)
 		}
 		m.messages = append(m.messages, formatMessage("System", "Connecting to Gemini..."))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 		cmds = append(cmds, m.initStreamCmd()) // Start connection attempt
 
 	case streamReadyMsg: // stream.go
@@ -1270,8 +1259,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.messages = append(m.messages, formatMessage("System", "Connected. You can start chatting."))
 		m.messages = append(m.messages, formatMessage("Info", fmt.Sprintf("%v tools available.", len(m.toolManager.RegisteredToolDefs))))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 		// Reset retry state on successful connection
 		m.streamRetryAttempt = 0
 		m.currentStreamBackoff = initialBackoffDuration
@@ -1287,8 +1275,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = m.messages[:len(m.messages)-1] // Remove "Connecting..." message
 		}
 		m.messages = append(m.messages, formatMessage("System", "Connected with bidirectional stream. You can start chatting."))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 		// Reset retry state on successful connection
 		m.streamRetryAttempt = 0
 		m.currentStreamBackoff = initialBackoffDuration
@@ -1379,7 +1366,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.saveSessionCmd()) // Auto-save periodically
 			}
 
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		}
 		if msg.output.SetupComplete != nil {
@@ -1433,7 +1420,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Update content if it's different
 					if m.messages[lastIdx].Content != msg.output.Text {
 						m.messages[lastIdx].Content = msg.output.Text
-						m.viewport.SetContent(m.renderAllMessages())
+						// UI will update automatically
 						m.viewport.GotoBottom()
 					}
 				}
@@ -1443,7 +1430,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if needToCreate {
 				log.Printf("Creating new message for text: %s", msg.output.Text)
 				m.messages = append(m.messages, newMessage)
-				m.viewport.SetContent(m.renderAllMessages())
+				// UI will update automatically
 				m.viewport.GotoBottom()
 
 				// Save to history if enabled
@@ -1524,7 +1511,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, execCodeMessage)
 			// Potentially transition state if execution is required?
 			// m.currentState = AppStateExecutingCode ?
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 			log.Printf("Added executable code message for language: %s", msg.output.ExecutableCode.GetLanguage())
 		}
@@ -1535,7 +1522,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, execResultMessage)
 			// Transition state back if needed
 			// m.currentState = AppStateChatting ?
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		}
 
@@ -1546,7 +1533,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Create and append an executable code message
 			execCodeMessage := formatExecutableCodeMessage(msg.output.ExecutableCode)
 			m.messages = append(m.messages, execCodeMessage)
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 			log.Printf("Added executable code message for language: %s", msg.output.ExecutableCode.GetLanguage())
 		}
@@ -1556,7 +1543,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Create and append an executable code result message
 			execResultMessage := formatExecutableCodeResultMessage(msg.output.CodeExecutionResult)
 			m.messages = append(m.messages, execResultMessage)
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 		}
 
@@ -1630,7 +1617,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				m.viewport.SetContent(m.renderAllMessages())
+				// UI will update automatically
 				m.viewport.GotoBottom()
 			}
 		}
@@ -1685,8 +1672,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentState = AppStateReady // Allow user to retry or type something else
 		m.err = fmt.Errorf("send error: %w", msg.err)
 		m.messages = append(m.messages, formatError(m.err))
-		m.viewport.SetContent(m.renderAllMessages())
-		m.viewport.GotoBottom()
+		// UI will update automatically
 
 	case streamErrorMsg: // stream.go
 		// Error receiving or connecting
@@ -1779,7 +1765,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				errorCategory, msg.err, errorDetails))
 
 			m.messages = append(m.messages, errorMessage)
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 
 			// Exit with non-zero code if this is the initial connection attempt
@@ -1814,7 +1800,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sprintf("Connection error (%s). Retrying in %v (attempt %d/%d)...\nDetails: %v",
 					errorCategory, delay.Round(time.Second), m.streamRetryAttempt, maxStreamRetries, msg.err)))
 
-			m.viewport.SetContent(m.renderAllMessages())
+			// UI will update automatically
 			m.viewport.GotoBottom()
 
 			// Update backoff for the *next* attempt
@@ -1833,27 +1819,30 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		log.Println("Stream closed cleanly or unexpectedly.")
 		// Stream closed cleanly or unexpectedly (but not an error handled by streamErrorMsg)
 		if m.currentState != AppStateQuitting && m.currentState != AppStateError {
-			// Only show stream closed message if we're not just initializing
-			if m.currentState != AppStateInitializing && m.streamRetryAttempt == 0 {
-				// Add error message
-				m.messages = append(m.messages, formatMessage("System", "Stream closed. Type a message to reconnect."))
+			// Automatically reconnect instead of showing user message
+			// This provides a seamless experience for users
+			if m.currentState != AppStateInitializing {
+				log.Println("Stream closed - automatically reconnecting...")
+				m.currentState = AppStateInitializing
 
-				// Print message to stdout through Bubble Tea to avoid rendering clashes
-				cmds = append(cmds, tea.Printf("\n\033[1;33m%s:\033[0m %s\n", "System",
-					"Stream closed. Type a message to reconnect."))
+				// Clean up old stream references
+				m.stream = nil
+				m.bidiStream = nil
 
-				// Set to ready state to allow reconnection
-				m.currentState = AppStateReady
-				m.viewport.GotoBottom()
+				// Initiate automatic reconnection
+				cmds = append(cmds, m.initStreamCmd())
 			} else {
 				// When already in retry process or initializing, just log it
-				log.Println("Stream closed while retrying connection or initializing - continuing flow")
+				log.Println("Stream closed while initializing - continuing flow")
 			}
+		} else {
+			// Clean up when quitting or in error state
+			m.stream = nil
+			m.bidiStream = nil
 		}
-		m.stream = nil
-		m.bidiStream = nil
+
 		// Avoid canceling context during reconnection flow
-		if m.streamCtxCancel != nil && m.streamRetryAttempt == 0 {
+		if m.streamCtxCancel != nil && m.streamRetryAttempt == 0 && m.currentState == AppStateQuitting {
 			m.streamCtxCancel()
 			m.streamCtxCancel = nil
 		}
@@ -1864,13 +1853,13 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 // monitorConnection monitors the gRPC/WebSocket connection health and logs debugging information
 func (m *Model) monitorConnection() {
 	log.Printf("[DEBUG] Starting connection health monitoring")
-	
+
 	ticker := time.NewTicker(DebuggingLogInterval)
 	defer ticker.Stop()
-	
+
 	startTime := time.Now()
 	lastLogTime := startTime
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -1879,20 +1868,20 @@ func (m *Model) monitorConnection() {
 				log.Printf("[DEBUG] Stream context is nil, stopping connection monitor")
 				return
 			}
-			
+
 			if m.streamCtx.Err() != nil {
 				log.Printf("[DEBUG] Stream context error: %v, stopping connection monitor", m.streamCtx.Err())
 				return
 			}
-			
+
 			// Log connection health
 			now := time.Now()
 			uptime := now.Sub(startTime)
 			timeSinceLastLog := now.Sub(lastLogTime)
-			
-			log.Printf("[DEBUG] Connection health check - Uptime: %v, Since last log: %v", 
+
+			log.Printf("[DEBUG] Connection health check - Uptime: %v, Since last log: %v",
 				uptime.Truncate(time.Second), timeSinceLastLog.Truncate(time.Second))
-			
+
 			// Log connection state details
 			if m.bidiStream != nil {
 				log.Printf("[DEBUG] Bidirectional stream is active")
@@ -1901,12 +1890,12 @@ func (m *Model) monitorConnection() {
 			} else {
 				log.Printf("[DEBUG] No active stream connection")
 			}
-			
+
 			// Log current application state
 			log.Printf("[DEBUG] App state: %v, Retry attempt: %d", m.currentState, m.streamRetryAttempt)
-			
+
 			lastLogTime = now
-			
+
 		case <-m.streamCtx.Done():
 			log.Printf("[DEBUG] Stream context cancelled, stopping connection monitor")
 			return

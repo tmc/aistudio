@@ -135,14 +135,14 @@ func main() {
 	if *listModelsFlag {
 		apiKey := *apiKeyFlag
 		grokAPIKey := *grokAPIKeyFlag
-		
+
 		if !*vertexFlag && !*grokFlag && apiKey == "" {
 			apiKey = os.Getenv("GEMINI_API_KEY")
 			if apiKey == "" {
 				fmt.Fprintln(os.Stderr, "Warning: No API key provided for listing models. Some models might not be visible.")
 			}
 		}
-		
+
 		if *grokFlag && grokAPIKey == "" {
 			grokAPIKey = os.Getenv("GROK_API_KEY")
 			if grokAPIKey == "" {

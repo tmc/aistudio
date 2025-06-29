@@ -172,7 +172,7 @@ type Model struct {
 	streamRetryAttempt   int           // Tracks the current retry attempt number
 	currentStreamBackoff time.Duration // Tracks the current backoff duration
 	globalTimeout        time.Duration // Global timeout for the entire program
-	
+
 	// Auto-send configuration for testing
 	autoSendEnabled bool          // Whether auto-send is enabled
 	autoSendDelay   time.Duration // Delay before auto-sending test message

@@ -18,7 +18,7 @@ const audioSampleRate = 24000
 const audioFormat = "s16le"
 
 // DefaultModel is the model known to support streaming with best capabilities
-const DefaultModel = "gemini-1.5-flash"
+const DefaultModel = "models/gemini-1.5-flash-latest"
 
 // DefaultGrokModel is the default Grok model
 const DefaultGrokModel = "grok-beta"
