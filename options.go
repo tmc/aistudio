@@ -314,6 +314,8 @@ func WithTools(enabled bool) Option {
 		m.enableTools = enabled
 		if enabled {
 			m.toolManager = NewToolManager()
+			// Register advanced tools by default when tools are enabled
+			NewAdvancedToolsRegistry(m.toolManager)
 		}
 		return nil
 	}
@@ -342,6 +344,8 @@ func WithToolsFile(filePath string) Option {
 		if m.toolManager == nil {
 			// Initialize tool manager if not already done
 			m.toolManager = NewToolManager()
+			// Register advanced tools by default when tools are enabled
+			NewAdvancedToolsRegistry(m.toolManager)
 		}
 
 		err := LoadToolsFromFile(filePath, m.toolManager)
