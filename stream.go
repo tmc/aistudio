@@ -157,7 +157,7 @@ func (m *Model) initStreamCmd() tea.Cmd {
 		start := time.Now()
 		log.Printf("[DEBUG] Initializing StreamGenerateContent for model: %s with API key (%d chars)",
 			m.modelName, len(m.apiKey))
-		
+
 		// Log connection debugging info if enabled
 		if os.Getenv(EnvDebugConnection) == "true" {
 			log.Printf("[DEBUG] Backend: %s, Project: %s, Location: %s", m.backend.String(), m.projectID, m.location)
@@ -414,7 +414,7 @@ func (m *Model) sendToGrokStreamCmd(text string) tea.Cmd {
 
 		// Create Grok request with conversation history
 		grokMessages := []api.GrokMessage{}
-		
+
 		// Add system prompt if available
 		if m.systemPrompt != "" {
 			grokMessages = append(grokMessages, api.GrokMessage{
@@ -431,7 +431,7 @@ func (m *Model) sendToGrokStreamCmd(text string) tea.Cmd {
 			} else if msg.Sender == senderNameSystem {
 				role = "system"
 			}
-			
+
 			grokMessages = append(grokMessages, api.GrokMessage{
 				Role:    role,
 				Content: msg.Content,

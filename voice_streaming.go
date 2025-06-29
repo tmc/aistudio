@@ -3,10 +3,10 @@ package aistudio
 import (
 	"context"
 	"fmt"
+	"image"
 	"log"
 	"sync"
 	"time"
-	"image"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -80,14 +80,14 @@ type VoiceInputData struct {
 }
 
 type VoiceOutputData struct {
-	Text       string
-	AudioData  []byte
-	Voice      string
-	Speed      float64
-	Pitch      float64
-	Volume     float64
-	Effects    []AudioEffect
-	Timestamp  time.Time
+	Text      string
+	AudioData []byte
+	Voice     string
+	Speed     float64
+	Pitch     float64
+	Volume    float64
+	Effects   []AudioEffect
+	Timestamp time.Time
 }
 
 type VoiceControlMessage struct {
@@ -702,8 +702,8 @@ const (
 
 // VideoConfig defines video streaming configuration
 type VideoConfig struct {
-	Enabled  bool               `json:"enabled" yaml:"enabled"`
-	Camera   CameraConfig       `json:"camera" yaml:"camera"`
+	Enabled  bool                `json:"enabled" yaml:"enabled"`
+	Camera   CameraConfig        `json:"camera" yaml:"camera"`
 	Screen   ScreenCaptureConfig `json:"screen" yaml:"screen"`
 	Analysis VideoAnalysisConfig `json:"analysis" yaml:"analysis"`
 }
@@ -729,10 +729,10 @@ type ScreenCaptureConfig struct {
 }
 
 type VideoAnalysisConfig struct {
-	Enabled         bool     `json:"enabled" yaml:"enabled"`
-	Features        []string `json:"features" yaml:"features"`
-	RealTime        bool     `json:"realTime" yaml:"realTime"`
-	ConfidenceThreshold float64 `json:"confidenceThreshold" yaml:"confidenceThreshold"`
+	Enabled             bool     `json:"enabled" yaml:"enabled"`
+	Features            []string `json:"features" yaml:"features"`
+	RealTime            bool     `json:"realTime" yaml:"realTime"`
+	ConfidenceThreshold float64  `json:"confidenceThreshold" yaml:"confidenceThreshold"`
 }
 
 // Video components (stub implementations)
