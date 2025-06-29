@@ -349,7 +349,7 @@ func TestConvertToAlphaFunctionDeclaration(t *testing.T) {
 	}
 
 	// Convert to alpha
-	alphaDecl := convertToAlphaFunctionDeclaration(betaDecl)
+	alphaDecl := convertToAlphaFunctionDeclaration(&betaDecl)
 
 	// Check conversion
 	if alphaDecl.Name != betaDecl.Name {

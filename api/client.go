@@ -540,9 +540,9 @@ func (c *Client) InitBidiStream(ctx context.Context, config *StreamClientConfig)
 	// Set up tools if defined
 	var fns []*generativelanguagepb.FunctionDeclaration
 	if config.ToolDefinitions != nil {
-		for _, td := range config.ToolDefinitions {
-			fd := generativelanguagepb.FunctionDeclaration(td)
-			fns = append(fns, &fd)
+		for i := range config.ToolDefinitions {
+			td := &config.ToolDefinitions[i]
+			fns = append(fns, td)
 		}
 	}
 
@@ -557,8 +557,8 @@ func (c *Client) InitBidiStream(ctx context.Context, config *StreamClientConfig)
 	// Log registered tools information
 	if config.ToolDefinitions != nil && len(config.ToolDefinitions) > 0 {
 		toolNames := make([]string, 0, len(config.ToolDefinitions))
-		for _, td := range config.ToolDefinitions {
-			toolNames = append(toolNames, td.Name)
+		for i := range config.ToolDefinitions {
+			toolNames = append(toolNames, config.ToolDefinitions[i].Name)
 		}
 		log.Printf("Registered tools (%d): %s", len(config.ToolDefinitions), strings.Join(toolNames, ", "))
 	}
@@ -695,9 +695,9 @@ func (c *Client) initBidiStreamAlpha(ctx context.Context, config *StreamClientCo
 	// Set up tools if defined for v1alpha
 	var fns []*generativelanguagealphapb.FunctionDeclaration
 	if config.ToolDefinitions != nil {
-		for _, td := range config.ToolDefinitions {
+		for i := range config.ToolDefinitions {
 			// Convert v1beta ToolDefinition to v1alpha
-			alphaFn := convertToAlphaFunctionDeclaration(td)
+			alphaFn := convertToAlphaFunctionDeclaration(&config.ToolDefinitions[i])
 			fns = append(fns, &alphaFn)
 		}
 	}
@@ -800,7 +800,7 @@ func alphaTextContent(text string, opts ...alphaTextContentOption) *generativela
 }
 
 // Convert from v1beta to v1alpha function declaration
-func convertToAlphaFunctionDeclaration(beta generativelanguagepb.FunctionDeclaration) generativelanguagealphapb.FunctionDeclaration {
+func convertToAlphaFunctionDeclaration(beta *generativelanguagepb.FunctionDeclaration) generativelanguagealphapb.FunctionDeclaration {
 	return generativelanguagealphapb.FunctionDeclaration{
 		Name:        beta.Name,
 		Description: beta.Description,
