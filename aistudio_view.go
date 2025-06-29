@@ -94,8 +94,10 @@ func (m *Model) renderViewToolApprovalModal() string {
 
 // renderInputArea builds the input area for user input
 func (m *Model) renderInputArea() string {
-	// Set the width for the textarea
-	m.textarea.SetWidth(m.width)
+	// Only set width if it has changed to avoid unnecessary updates
+	if m.width > 0 && m.textarea.Width() != m.width {
+		m.textarea.SetWidth(m.width)
+	}
 
 	// Render the input area
 	return m.textarea.View()
@@ -184,7 +186,12 @@ func (m *Model) View() string {
 	// Add model name explicitly for tests
 	parts = append(parts, fmt.Sprintf("Model: %s", m.modelName))
 
-	parts = append(parts, m.renderAllMessages())
+	// Ensure viewport has current content and only update when needed
+	currentContent := m.renderAllMessages()
+	if m.viewport.Width > 0 && currentContent != "" {
+		m.viewport.SetContent(currentContent)
+	}
+	parts = append(parts, m.viewport.View())
 	// Add the input area
 	parts = append(parts, m.renderInputArea())
 	// Add the status line

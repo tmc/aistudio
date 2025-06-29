@@ -9,6 +9,9 @@ import (
 
 // TestModelInit tests that the model initialization calls initCmd properly
 func TestModelInit(t *testing.T) {
+	cleanup := SetupTestLogging(t)
+	defer cleanup()
+
 	// Provide a minimal option to prevent New() from returning nil
 	model := New(WithAPIKey(""))
 	if model == nil {
@@ -35,6 +38,9 @@ func TestModelInit(t *testing.T) {
 
 // TestView tests the View implementation
 func TestView(t *testing.T) {
+	cleanup := SetupTestLogging(t)
+	defer cleanup()
+
 	model := New(WithAPIKey(""), WithModel("test-model"))
 	if model == nil {
 		t.Fatal("New() returned nil even with an option")
@@ -138,6 +144,9 @@ func TestNew(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cleanup := SetupTestLogging(t)
+			defer cleanup()
+
 			m := New(tt.opts...)
 			if (m == nil) != tt.wantNil {
 				t.Errorf("New() = %v, wantNil = %v", m == nil, tt.wantNil)
