@@ -28,12 +28,12 @@ type AdvancedToolsRegistry struct {
 // NewAdvancedToolsRegistry creates a new registry and registers all advanced tools
 func NewAdvancedToolsRegistry(tm *ToolManager) (*AdvancedToolsRegistry, error) {
 	registry := &AdvancedToolsRegistry{toolManager: tm}
-	
+
 	// Register all advanced tools
 	if err := registry.registerAllTools(); err != nil {
 		return nil, fmt.Errorf("failed to register advanced tools: %w", err)
 	}
-	
+
 	return registry, nil
 }
 
@@ -468,7 +468,7 @@ func (r *AdvancedToolsRegistry) registerAllTools() error {
 			}
 			return tool.handler(context.Background(), argMap)
 		}
-		
+
 		if err := r.toolManager.RegisterTool(tool.name, tool.description, tool.parameters, wrappedHandler); err != nil {
 			return fmt.Errorf("failed to register tool %s: %w", tool.name, err)
 		}
@@ -519,8 +519,8 @@ func (r *AdvancedToolsRegistry) handleCodeAnalyzer(args json.RawMessage) (any, e
 	}
 
 	return map[string]interface{}{
-		"file":     params.FilePath,
-		"analysis": analysis,
+		"file":      params.FilePath,
+		"analysis":  analysis,
 		"timestamp": time.Now().UTC(),
 	}, nil
 }
@@ -571,7 +571,7 @@ func (r *AdvancedToolsRegistry) calculateCyclomaticComplexity(fn *ast.FuncDecl) 
 
 func (r *AdvancedToolsRegistry) analyzeDependencies(node *ast.File) map[string]interface{} {
 	imports := make(map[string]string)
-	
+
 	for _, imp := range node.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
 		name := path
@@ -592,10 +592,10 @@ func (r *AdvancedToolsRegistry) analyzeDependencies(node *ast.File) map[string]i
 func (r *AdvancedToolsRegistry) countStandardLibraryImports(imports map[string]string) int {
 	count := 0
 	stdLibs := []string{
-		"fmt", "os", "io", "net", "http", "time", "strings", "strconv", 
+		"fmt", "os", "io", "net", "http", "time", "strings", "strconv",
 		"context", "sync", "encoding", "crypto", "database", "testing",
 	}
-	
+
 	for _, path := range imports {
 		for _, std := range stdLibs {
 			if strings.HasPrefix(path, std) {
@@ -619,7 +619,7 @@ func (r *AdvancedToolsRegistry) countThirdPartyImports(imports map[string]string
 
 func (r *AdvancedToolsRegistry) analyzeStyle(node *ast.File, fset *token.FileSet) map[string]interface{} {
 	issues := []string{}
-	
+
 	// Check for naming conventions
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch decl := n.(type) {
@@ -649,7 +649,7 @@ func (r *AdvancedToolsRegistry) analyzeStyle(node *ast.File, fset *token.FileSet
 
 func (r *AdvancedToolsRegistry) analyzeSecurityIssues(node *ast.File) map[string]interface{} {
 	issues := []string{}
-	
+
 	// Look for potential security issues
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch call := n.(type) {
@@ -693,7 +693,7 @@ func (r *AdvancedToolsRegistry) handleTestGenerator(args json.RawMessage) (any, 
 
 	// Generate test file path
 	testFile := strings.TrimSuffix(params.SourceFile, ".go") + "_test.go"
-	
+
 	// Generate tests
 	testCode := r.generateTestCode(node, params.FunctionName, params.TestTypes)
 
@@ -709,13 +709,13 @@ func (r *AdvancedToolsRegistry) handleTestGenerator(args json.RawMessage) (any, 
 
 func (r *AdvancedToolsRegistry) generateTestCode(node *ast.File, functionName string, testTypes []string) string {
 	var buf strings.Builder
-	
+
 	buf.WriteString(fmt.Sprintf("package %s\n\n", node.Name.Name))
 	buf.WriteString("import (\n\t\"testing\"\n)\n\n")
 
 	// Extract functions to test
 	functions := r.extractFunctionNames(node, functionName)
-	
+
 	for _, fn := range functions {
 		for _, testType := range testTypes {
 			switch testType {
@@ -786,7 +786,7 @@ func (r *AdvancedToolsRegistry) generateFuzzTest(functionName string) string {
 
 func (r *AdvancedToolsRegistry) extractFunctionNames(node *ast.File, specific string) []string {
 	var functions []string
-	
+
 	ast.Inspect(node, func(n ast.Node) bool {
 		if fn, ok := n.(*ast.FuncDecl); ok && fn.Name != nil {
 			if specific == "" || fn.Name.Name == specific {
@@ -798,7 +798,7 @@ func (r *AdvancedToolsRegistry) extractFunctionNames(node *ast.File, specific st
 		}
 		return true
 	})
-	
+
 	return functions
 }
 
@@ -857,7 +857,7 @@ func (r *AdvancedToolsRegistry) analyzeProjectStructure(projectPath string, incl
 		}
 
 		relPath, _ := filepath.Rel(projectPath, path)
-		
+
 		// Skip vendor directory if not included
 		if !includeVendor && strings.Contains(relPath, "vendor") {
 			return nil
@@ -925,7 +925,7 @@ func (r *AdvancedToolsRegistry) calculateProjectMetrics(projectPath string) (map
 	metrics := make(map[string]interface{})
 	totalLines := 0
 	totalComplexity := 0
-	
+
 	err := filepath.Walk(projectPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -1034,13 +1034,13 @@ func (r *AdvancedToolsRegistry) handleRefactorAssistant(args json.RawMessage) (a
 
 func (r *AdvancedToolsRegistry) suggestFunctionExtraction(node *ast.File, target string) []string {
 	suggestions := []string{}
-	
+
 	ast.Inspect(node, func(n ast.Node) bool {
 		if fn, ok := n.(*ast.FuncDecl); ok && fn.Name != nil {
 			complexity := r.calculateCyclomaticComplexity(fn)
 			if complexity > 10 {
-				suggestions = append(suggestions, 
-					fmt.Sprintf("Function %s has high complexity (%d). Consider extracting smaller functions.", 
+				suggestions = append(suggestions,
+					fmt.Sprintf("Function %s has high complexity (%d). Consider extracting smaller functions.",
 						fn.Name.Name, complexity))
 			}
 		}
@@ -1052,13 +1052,13 @@ func (r *AdvancedToolsRegistry) suggestFunctionExtraction(node *ast.File, target
 
 func (r *AdvancedToolsRegistry) suggestRename(node *ast.File, target string) []string {
 	suggestions := []string{}
-	
+
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch decl := n.(type) {
 		case *ast.FuncDecl:
 			if decl.Name != nil && decl.Name.Name == target {
 				if !isGoodName(decl.Name.Name) {
-					suggestions = append(suggestions, 
+					suggestions = append(suggestions,
 						fmt.Sprintf("Consider renaming function %s to be more descriptive", target))
 				}
 			}
@@ -1071,7 +1071,7 @@ func (r *AdvancedToolsRegistry) suggestRename(node *ast.File, target string) []s
 
 func (r *AdvancedToolsRegistry) suggestSimplifications(node *ast.File) []string {
 	suggestions := []string{}
-	
+
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch stmt := n.(type) {
 		case *ast.IfStmt:
@@ -1088,7 +1088,7 @@ func (r *AdvancedToolsRegistry) suggestSimplifications(node *ast.File) []string 
 
 func (r *AdvancedToolsRegistry) suggestOptimizations(node *ast.File) []string {
 	suggestions := []string{}
-	
+
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch expr := n.(type) {
 		case *ast.CallExpr:
@@ -1105,12 +1105,12 @@ func (r *AdvancedToolsRegistry) suggestOptimizations(node *ast.File) []string {
 
 func (r *AdvancedToolsRegistry) handleAPITester(args json.RawMessage) (any, error) {
 	var params struct {
-		URL       string                 `json:"url"`
-		Method    string                 `json:"method"`
-		Headers   map[string]string      `json:"headers"`
-		Body      string                 `json:"body"`
-		AuthType  string                 `json:"auth_type"`
-		AuthValue string                 `json:"auth_value"`
+		URL       string            `json:"url"`
+		Method    string            `json:"method"`
+		Headers   map[string]string `json:"headers"`
+		Body      string            `json:"body"`
+		AuthType  string            `json:"auth_type"`
+		AuthValue string            `json:"auth_value"`
 	}
 
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -1380,12 +1380,12 @@ func (r *AdvancedToolsRegistry) handleDatabaseQuery(args json.RawMessage) (any, 
 	}
 
 	return map[string]interface{}{
-		"query":       params.Query,
-		"database":    params.DatabaseType,
-		"columns":     columns,
-		"results":     results,
-		"row_count":   len(results),
-		"timestamp":   time.Now().UTC(),
+		"query":     params.Query,
+		"database":  params.DatabaseType,
+		"columns":   columns,
+		"results":   results,
+		"row_count": len(results),
+		"timestamp": time.Now().UTC(),
 	}, nil
 }
 
@@ -1504,13 +1504,13 @@ func (r *AdvancedToolsRegistry) handleCodeFormatter(args json.RawMessage) (any, 
 	}
 
 	result := map[string]interface{}{
-		"file_path":     params.FilePath,
-		"style":         params.Style,
-		"fix_imports":   params.FixImports,
-		"dry_run":       params.DryRun,
-		"original_size": len(content),
+		"file_path":      params.FilePath,
+		"style":          params.Style,
+		"fix_imports":    params.FixImports,
+		"dry_run":        params.DryRun,
+		"original_size":  len(content),
 		"formatted_size": formatted.Len(),
-		"changed":       string(content) != formatted.String(),
+		"changed":        string(content) != formatted.String(),
 	}
 
 	if params.DryRun {
@@ -1545,11 +1545,11 @@ func (r *AdvancedToolsRegistry) handleDependencyAnalyzer(args json.RawMessage) (
 	}
 
 	result := map[string]interface{}{
-		"module_path":             params.ModulePath,
-		"analysis_depth":          params.AnalysisDepth,
-		"check_vulnerabilities":   params.CheckVulnerabilities,
-		"suggest_updates":         params.SuggestUpdates,
-		"timestamp":               time.Now().UTC(),
+		"module_path":           params.ModulePath,
+		"analysis_depth":        params.AnalysisDepth,
+		"check_vulnerabilities": params.CheckVulnerabilities,
+		"suggest_updates":       params.SuggestUpdates,
+		"timestamp":             time.Now().UTC(),
 	}
 
 	// Analyze go.mod
@@ -1576,7 +1576,7 @@ func (r *AdvancedToolsRegistry) handleDependencyAnalyzer(args json.RawMessage) (
 
 func (r *AdvancedToolsRegistry) getDependencyInfo(modulePath, depth string) (map[string]interface{}, error) {
 	var cmd *exec.Cmd
-	
+
 	switch depth {
 	case "direct":
 		cmd = exec.Command("go", "list", "-m", "-f", "{{.Path}} {{.Version}}", "all")
@@ -1613,7 +1613,7 @@ func (r *AdvancedToolsRegistry) checkForUpdates(modulePath string) ([]string, er
 
 	lines := strings.Split(string(output), "\n")
 	var updates []string
-	
+
 	for _, line := range lines {
 		if strings.Contains(line, "[") && strings.Contains(line, "]") {
 			updates = append(updates, line)
@@ -1678,10 +1678,10 @@ func (r *AdvancedToolsRegistry) handleGitAssistant(args json.RawMessage) (any, e
 	}
 
 	result := map[string]interface{}{
-		"repo_path":  params.RepoPath,
-		"operation":  params.Operation,
-		"output":     string(output),
-		"timestamp":  time.Now().UTC(),
+		"repo_path": params.RepoPath,
+		"operation": params.Operation,
+		"output":    string(output),
+		"timestamp": time.Now().UTC(),
 	}
 
 	// Parse output for specific operations
@@ -1765,7 +1765,7 @@ func (r *AdvancedToolsRegistry) handleAIModelComparison(args json.RawMessage) (a
 	// This is a simplified implementation
 	// In a real scenario, you'd integrate with actual AI model APIs
 	results := make(map[string]interface{})
-	
+
 	for _, model := range params.Models {
 		// Simulate model responses (in practice, call actual APIs)
 		modelResult := map[string]interface{}{
@@ -1789,7 +1789,7 @@ func (r *AdvancedToolsRegistry) handleAIModelComparison(args json.RawMessage) (a
 
 	// Calculate comparative analysis
 	comparison := r.compareModelResults(results, params.EvaluationCriteria)
-	
+
 	return map[string]interface{}{
 		"prompt":              params.Prompt,
 		"models":              params.Models,
@@ -1802,12 +1802,12 @@ func (r *AdvancedToolsRegistry) handleAIModelComparison(args json.RawMessage) (a
 
 func (r *AdvancedToolsRegistry) compareModelResults(results map[string]interface{}, criteria []string) map[string]interface{} {
 	comparison := make(map[string]interface{})
-	
+
 	// Find best performing model for each criterion
 	for _, criterion := range criteria {
 		bestModel := ""
 		bestScore := 0.0
-		
+
 		for model, result := range results {
 			if modelResult, ok := result.(map[string]interface{}); ok {
 				if scores, ok := modelResult["scores"].(map[string]float64); ok {
@@ -1818,13 +1818,13 @@ func (r *AdvancedToolsRegistry) compareModelResults(results map[string]interface
 				}
 			}
 		}
-		
+
 		comparison[criterion] = map[string]interface{}{
 			"best_model": bestModel,
 			"best_score": bestScore,
 		}
 	}
-	
+
 	return comparison
 }
 
