@@ -15,7 +15,7 @@ import (
 
 const (
 	// LiveModelEndpoint is the WebSocket endpoint for Gemini Live API
-	LiveModelEndpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+	LiveModelEndpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
 )
 
 // LiveClient manages communication with Gemini live models through WebSockets
@@ -156,10 +156,10 @@ func NewLiveClient(ctx context.Context, apiKey string, config *StreamClientConfi
 	// Create a context with cancel function
 	ctxWithCancel, cancel := context.WithCancel(ctx)
 
-	// Clean the model name - WebSocket API expects model name without "models/" prefix
+	// Ensure model name has "models/" prefix - WebSocket API v1alpha requires it
 	modelName := config.ModelName
-	if strings.HasPrefix(modelName, "models/") {
-		modelName = strings.TrimPrefix(modelName, "models/")
+	if !strings.HasPrefix(modelName, "models/") {
+		modelName = "models/" + modelName
 	}
 
 	// Create the client
