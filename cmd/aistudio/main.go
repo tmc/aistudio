@@ -86,6 +86,20 @@ func main() {
 	toolApprovalFlag := flag.Bool("tool-approval", true, "Require user approval for tool calls.")
 	stdinModeFlag := flag.Bool("stdin", false, "Read messages from stdin without running TUI. Useful for scripting.")
 
+	// Multimodal streaming flags
+	multimodalFlag := flag.Bool("multimodal", false, "Enable multimodal streaming with audio input and screen capture.")
+	audioInputFlag := flag.Bool("audio-input", false, "Enable audio input/microphone.")
+	screenCaptureFlag := flag.Bool("screen-capture", false, "Enable screen capture.")
+	
+	// Window selection flags
+	captureWindowFlag := flag.String("capture-window", "", "Capture specific window by name (e.g., 'Safari', 'Chrome').")
+	captureProcessFlag := flag.String("capture-process", "", "Capture window by process name (e.g., 'Safari', 'Google Chrome').")
+	listWindowsFlag := flag.Bool("list-windows", false, "List all available windows and exit.")
+	audioCaptureDeviceFlag := flag.String("audio-device", "default", "Audio input device to use.")
+	screenCaptureIntervalFlag := flag.Duration("capture-interval", 2*time.Second, "Screen capture interval (e.g., 2s, 5s).")
+	audioVADFlag := flag.Bool("audio-vad", true, "Enable voice activity detection for audio input.")
+	captureQualityFlag := flag.Int("capture-quality", 80, "Screen capture quality (0-100).")
+
 	// Profiling flags (all with pprof- prefix)
 	cpuprofile := flag.String("pprof-cpu", "", "Write cpu profile to `file`")
 	memprofile := flag.String("pprof-mem", "", "Write memory profile to `file`")
@@ -110,6 +124,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nStdin Mode Examples:\n")
 		fmt.Fprintf(os.Stderr, "  Interactive: cat | %s --stdin\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  Piped: echo \"Hello\" | %s --stdin\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nMultimodal Streaming Examples:\n")
+		fmt.Fprintf(os.Stderr, "  Full multimodal: %s --multimodal --model=models/gemini-2.0-flash-live-001\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Audio input only: %s --audio-input --audio-device=default\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Screen capture only: %s --screen-capture --capture-interval=5s\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Custom quality: %s --multimodal --capture-quality=60\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Capture specific window: %s --screen-capture --capture-window=\"Safari\"\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Capture by process: %s --multimodal --capture-process=\"Google Chrome\"\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nWindow Selection Examples:\n")
+		fmt.Fprintf(os.Stderr, "  List all windows: %s --list-windows\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Capture TextEdit: %s --screen-capture --capture-window=\"TextEdit\"\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Capture browser: %s --multimodal --capture-process=\"Chrome\"\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nMultimodal Keyboard Shortcuts:\n")
+		fmt.Fprintf(os.Stderr, "  Ctrl+M: Toggle multimodal streaming\n")
+		fmt.Fprintf(os.Stderr, "  Ctrl+Shift+A: Toggle audio input\n")
+		fmt.Fprintf(os.Stderr, "  Ctrl+Shift+I: Toggle screen capture\n")
+		fmt.Fprintf(os.Stderr, "  Ctrl+Shift+S: Capture screen now\n")
 		fmt.Fprintf(os.Stderr, "\nProfiling Examples:\n")
 		fmt.Fprintf(os.Stderr, "  CPU profile:    %s --pprof-cpu=cpu.prof\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  Memory profile: %s --pprof-mem=mem.prof\n", os.Args[0])
@@ -228,6 +258,49 @@ func main() {
 		}
 
 		// Should never reach here as WithListModels calls os.Exit(0)
+	}
+
+	// Handle --list-windows flag
+	if *listWindowsFlag {
+		// Create a temporary image capture manager to list windows
+		config := aistudio.DefaultImageCaptureConfig()
+		icm := aistudio.NewImageCaptureManager(config, nil)
+		
+		windows, err := icm.ListWindows()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing windows: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Printf("Available windows:\n")
+		fmt.Printf("%-10s %-20s %-30s %s\n", "ID", "Process", "Name", "Size")
+		fmt.Printf("%-10s %-20s %-30s %s\n", "----------", "--------------------", "------------------------------", "----------")
+		
+		for _, window := range windows {
+			size := ""
+			if window.Width > 0 && window.Height > 0 {
+				size = fmt.Sprintf("%dx%d", window.Width, window.Height)
+			}
+			
+			name := window.Name
+			if len(name) > 30 {
+				name = name[:27] + "..."
+			}
+			
+			processName := window.ProcessName
+			if len(processName) > 20 {
+				processName = processName[:17] + "..."
+			}
+			
+			fmt.Printf("%-10s %-20s %-30s %s\n", window.ID, processName, name, size)
+		}
+		
+		fmt.Printf("\nUsage Examples:\n")
+		fmt.Printf("  Capture by window name: %s --capture-window=\"Safari\"\n", os.Args[0])
+		fmt.Printf("  Capture by process: %s --capture-process=\"Google Chrome\"\n", os.Args[0])
+		fmt.Printf("  With multimodal: %s --multimodal --capture-window=\"TextEdit\"\n", os.Args[0])
+		
+		os.Exit(0)
 	}
 
 	// CPU profiling
@@ -398,6 +471,44 @@ func main() {
 	opts = append(opts, aistudio.WithCodeExecution(*codeExecutionFlag))
 	opts = append(opts, aistudio.WithDisplayTokenCounts(*displayTokensFlag))
 	opts = append(opts, aistudio.WithWebSocket(*webSocketFlag))
+
+	// Add multimodal streaming configuration
+	if *multimodalFlag || *audioInputFlag || *screenCaptureFlag {
+		// Enable multimodal streaming
+		opts = append(opts, aistudio.WithMultimodalStreaming(true))
+		
+		// Create multimodal configuration
+		multimodalConfig := aistudio.DefaultMultimodalConfig()
+		
+		// Configure audio input
+		if *audioInputFlag || *multimodalFlag {
+			multimodalConfig.EnableAudio = true
+			multimodalConfig.AudioConfig.InputDevice = *audioCaptureDeviceFlag
+			multimodalConfig.AudioConfig.EnableVAD = *audioVADFlag
+			log.Printf("Audio input enabled: device=%s, VAD=%v", *audioCaptureDeviceFlag, *audioVADFlag)
+		}
+		
+		// Configure screen capture
+		if *screenCaptureFlag || *multimodalFlag {
+			multimodalConfig.EnableImages = true
+			multimodalConfig.ImageConfig.CaptureInterval = *screenCaptureIntervalFlag
+			multimodalConfig.ImageConfig.CaptureQuality = *captureQualityFlag
+			
+			// Handle window selection
+			if *captureWindowFlag != "" {
+				multimodalConfig.ImageConfig.CaptureWindow = *captureWindowFlag
+				log.Printf("Screen capture enabled for window: %s", *captureWindowFlag)
+			} else if *captureProcessFlag != "" {
+				multimodalConfig.ImageConfig.CaptureWindow = *captureProcessFlag
+				log.Printf("Screen capture enabled for process: %s", *captureProcessFlag)
+			} else {
+				log.Printf("Screen capture enabled: interval=%v, quality=%d", *screenCaptureIntervalFlag, *captureQualityFlag)
+			}
+		}
+		
+		// Apply multimodal configuration
+		opts = append(opts, aistudio.WithMultimodalConfig(multimodalConfig))
+	}
 
 	// Add response configuration if specified
 	if *responseMimeTypeFlag != "" {
