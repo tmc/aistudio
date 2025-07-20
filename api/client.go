@@ -650,7 +650,13 @@ func (c *Client) InitBidiStream(ctx context.Context, config *StreamClientConfig)
 // SendMessageToBidiStream sends a message to an existing StreamGenerateContent stream.
 // This is a compatibility function that actually creates a new stream for each message.
 func (c *Client) SendMessageToBidiStream(stream generativelanguagepb.GenerativeService_StreamGenerateContentClient, text string) error {
-	// For StreamGenerateContent, we can't send to an existing stream
+	// Check if this is a LiveStreamAdapter (WebSocket stream)
+	if adapter, ok := stream.(*LiveStreamAdapter); ok {
+		log.Printf("Sending message via LiveStreamAdapter: %s", text)
+		return adapter.SendMessage(text)
+	}
+
+	// For regular StreamGenerateContent, we can't send to an existing stream
 	// But we're keeping the interface for compatibility
 	log.Printf("SendMessageToBidiStream is a no-op in this implementation as StreamGenerateContent is one-way.")
 
@@ -950,6 +956,11 @@ func ExtractOutput(resp *generativelanguagepb.GenerateContentResponse) StreamOut
 					}
 				}
 			}
+		}
+
+		// Check finish reason to determine if turn is complete
+		if candidate.FinishReason == generativelanguagepb.Candidate_STOP {
+			output.TurnComplete = true
 		}
 	}
 

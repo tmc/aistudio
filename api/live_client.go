@@ -570,6 +570,65 @@ func (c *LiveClient) ensureInitialized() error {
 	return nil
 }
 
+// SendRawMessage sends a raw JSON message to the live API
+func (c *LiveClient) SendRawMessage(message []byte) error {
+	if c.conn == nil {
+		return fmt.Errorf("not connected to Live API")
+	}
+	
+	// Record the message if recording is enabled
+	if c.recorder != nil && c.recorder.RecordMode {
+		if err := c.recorder.RecordSend(message, websocket.TextMessage); err != nil {
+			log.Printf("Warning: Failed to record raw message: %v", err)
+		}
+	}
+	
+	return c.conn.WriteMessage(websocket.TextMessage, message)
+}
+
+// parseMessage parses a JSON message from the live API
+func (c *LiveClient) parseMessage(data []byte) (*StreamOutput, error) {
+	var response map[string]interface{}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse message: %v", err)
+	}
+	
+	output := &StreamOutput{}
+	
+	// Handle different message types
+	if setupComplete, ok := response["setupComplete"]; ok && setupComplete != nil {
+		// Setup complete message
+		return output, nil
+	}
+	
+	if serverContent, ok := response["serverContent"]; ok {
+		serverContentMap := serverContent.(map[string]interface{})
+		
+		// Handle text content
+		if parts, ok := serverContentMap["parts"]; ok {
+			partsArray := parts.([]interface{})
+			for _, part := range partsArray {
+				partMap := part.(map[string]interface{})
+				if text, ok := partMap["text"]; ok {
+					output.Text = text.(string)
+				}
+			}
+		}
+		
+		// Handle turn complete
+		if turnComplete, ok := serverContentMap["turnComplete"]; ok && turnComplete.(bool) {
+			output.TurnComplete = true
+		}
+	}
+	
+	return output, nil
+}
+
+// GetAPIKey returns the API key for the client
+func (c *LiveClient) GetAPIKey() string {
+	return c.apiKey
+}
+
 // IsLiveModel checks if a model name corresponds to a live model
 func IsLiveModel(modelName string) bool {
 	modelName = strings.ToLower(modelName)
