@@ -12,7 +12,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.28
-	github.com/tmc/mcp v0.0.0-20241126155658-6dc8f6842a0a
 	golang.org/x/term v0.32.0
 	google.golang.org/api v0.234.0
 	google.golang.org/grpc v1.72.1
