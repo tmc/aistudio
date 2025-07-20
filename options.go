@@ -438,6 +438,61 @@ func WithDisplayTokenCounts(enabled bool) Option {
 	}
 }
 
+// WithMultimodalStreaming enables multimodal streaming with audio input and image capture.
+func WithMultimodalStreaming(enabled bool) Option {
+	return func(m *Model) error {
+		m.enableMultimodal = enabled
+		return nil
+	}
+}
+
+// WithMultimodalConfig sets the configuration for multimodal streaming.
+func WithMultimodalConfig(config MultimodalConfig) Option {
+	return func(m *Model) error {
+		m.multimodalConfig = config
+		return nil
+	}
+}
+
+// WithAudioInput enables audio input with the specified configuration.
+func WithAudioInput(enabled bool, config AudioInputConfig) Option {
+	return func(m *Model) error {
+		if enabled {
+			m.multimodalConfig.EnableAudio = true
+			m.multimodalConfig.AudioConfig = config
+		} else {
+			m.multimodalConfig.EnableAudio = false
+		}
+		return nil
+	}
+}
+
+// WithImageCapture enables image capture with the specified configuration.
+func WithImageCapture(enabled bool, config ImageCaptureConfig) Option {
+	return func(m *Model) error {
+		if enabled {
+			m.multimodalConfig.EnableImages = true
+			m.multimodalConfig.ImageConfig = config
+		} else {
+			m.multimodalConfig.EnableImages = false
+		}
+		return nil
+	}
+}
+
+// WithScreenCapture enables screen capture with the specified interval.
+func WithScreenCapture(enabled bool, interval time.Duration) Option {
+	return func(m *Model) error {
+		if enabled {
+			m.multimodalConfig.EnableImages = true
+			m.multimodalConfig.ImageConfig.CaptureInterval = interval
+		} else {
+			m.multimodalConfig.EnableImages = false
+		}
+		return nil
+	}
+}
+
 // WithGlobalTimeout sets a global timeout for the entire program.
 func WithGlobalTimeout(timeout time.Duration) Option {
 	return func(m *Model) error {

@@ -197,6 +197,11 @@ type Model struct {
 
 	// Feature flags
 	enableWebSearch     bool   // Enable web search/grounding capabilities
+	
+	// Multimodal streaming
+	multimodalManager   *MultimodalStreamingManager // Manages audio input and image capture
+	enableMultimodal    bool                        // Enable multimodal streaming
+	multimodalConfig    MultimodalConfig            // Configuration for multimodal features
 	enableCodeExecution bool   // Enable code execution capabilities
 	responseMimeType    string // MIME type of the expected response (e.g., "application/json")
 	responseSchemaFile  string // Path to JSON schema file defining response structure

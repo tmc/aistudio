@@ -333,6 +333,112 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Send the message
 		return m, m.sendToStreamCmd(testMessage)
 
+	// Multimodal streaming messages
+	case MultimodalStreamingStartedMsg:
+		// Handle multimodal streaming started
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: "🎤📷 Multimodal streaming started - audio input and screen capture active",
+		})
+		return m, nil
+
+	case MultimodalStreamingStoppedMsg:
+		// Handle multimodal streaming stopped
+		stopMsg := fmt.Sprintf("🛑 Multimodal streaming stopped - Duration: %v, Audio chunks: %d, Images: %d, Data: %d bytes",
+			msg.Duration, msg.AudioChunksSent, msg.ImageFramesSent, msg.BytesStreamed)
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: stopMsg,
+		})
+		return m, nil
+
+	case MultimodalResponseMsg:
+		// Handle multimodal response from live API
+		switch msg.Type {
+		case "text":
+			if msg.Content != "" {
+				m.messages = append(m.messages, Message{
+					Sender:  "Gemini",
+					Content: msg.Content,
+				})
+			}
+		case "audio":
+			if msg.AudioData != nil && len(msg.AudioData) > 0 {
+				// Play the audio response
+				cmds = append(cmds, m.playAudioCmd(msg.AudioData))
+			}
+		case "function_call":
+			if msg.FunctionCall != nil {
+				// Handle function call
+				m.messages = append(m.messages, Message{
+					Sender:  "Gemini",
+					Content: fmt.Sprintf("🔧 Function call: %s", msg.FunctionCall.Name),
+				})
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case AudioInputStartedMsg:
+		// Handle audio input started
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: "🎤 Audio input started - listening for voice commands",
+		})
+		return m, nil
+
+	case AudioInputStoppedMsg:
+		// Handle audio input stopped
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: "🔇 Audio input stopped",
+		})
+		return m, nil
+
+	case AudioInputChunkMsg:
+		// Handle audio input chunk - this is processed by the multimodal manager
+		// Just log for debugging
+		log.Printf("[AUDIO_INPUT] Received audio chunk: %d bytes, voice=%v", 
+			len(msg.Chunk.Data), msg.Chunk.IsVoice)
+		return m, nil
+
+	case AudioInputErrorMsg:
+		// Handle audio input error
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: fmt.Sprintf("❌ Audio input error: %v", msg.Error),
+		})
+		return m, nil
+
+	case ImageCaptureStartedMsg:
+		// Handle image capture started
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: "📷 Screen capture started - capturing screen at regular intervals",
+		})
+		return m, nil
+
+	case ImageCaptureStoppedMsg:
+		// Handle image capture stopped
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: "📷 Screen capture stopped",
+		})
+		return m, nil
+
+	case ImageFrameMsg:
+		// Handle image frame captured - processed by multimodal manager
+		log.Printf("[IMAGE_CAPTURE] Received image frame: %d bytes, format=%s", 
+			len(msg.Frame.Data), msg.Frame.Format)
+		return m, nil
+
+	case ImageCaptureErrorMsg:
+		// Handle image capture error
+		m.messages = append(m.messages, Message{
+			Sender:  "System",
+			Content: fmt.Sprintf("❌ Image capture error: %v", msg.Error),
+		})
+		return m, nil
+
 	default:
 		// Handle stream-related messages
 		return m.handleStreamMsg(msg)
@@ -430,8 +536,28 @@ func (m *Model) Init() tea.Cmd {
 		}
 	}
 
-	// Experimental integrations temporarily disabled - moved to .wip files
-	// TODO: Re-enable when stabilized
+	// Initialize multimodal streaming if enabled
+	if m.enableMultimodal {
+		log.Printf("Multimodal streaming enabled: audio=%t, images=%t", 
+			m.multimodalConfig.EnableAudio, m.multimodalConfig.EnableImages)
+		
+		// Initialize multimodal manager
+		m.multimodalManager = NewMultimodalStreamingManager(m.multimodalConfig, m.client, m.uiUpdateChan)
+		
+		if m.multimodalConfig.EnableAudio {
+			log.Printf("Audio input configured: device=%s, sample_rate=%d, channels=%d", 
+				m.multimodalConfig.AudioConfig.InputDevice, 
+				m.multimodalConfig.AudioConfig.SampleRate,
+				m.multimodalConfig.AudioConfig.Channels)
+		}
+		
+		if m.multimodalConfig.EnableImages {
+			log.Printf("Image capture configured: interval=%v, format=%s, quality=%d", 
+				m.multimodalConfig.ImageConfig.CaptureInterval,
+				m.multimodalConfig.ImageConfig.OutputFormat,
+				m.multimodalConfig.ImageConfig.CaptureQuality)
+		}
+	}
 
 	// --- Continue with the original Init behavior ---
 	// Start with ready state
@@ -948,11 +1074,56 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...) // Return early
 
-	case "ctrl+m": // Toggle Mic state
-		m.micActive = !m.micActive
-		log.Printf("Mic input simulation toggled: %v", m.micActive)
-		if m.micActive {
-			m.videoInputMode = VideoInputNone
+	case "ctrl+m": // Toggle multimodal streaming
+		if m.enableMultimodal && m.multimodalManager != nil {
+			if m.multimodalManager.IsStreaming() {
+				if err := m.multimodalManager.StopStreaming(); err != nil {
+					m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Error stopping multimodal streaming: %v", err)))
+				}
+			} else {
+				if err := m.multimodalManager.StartStreaming(); err != nil {
+					m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Error starting multimodal streaming: %v", err)))
+				}
+			}
+		} else {
+			// Legacy mic simulation toggle
+			m.micActive = !m.micActive
+			log.Printf("Mic input simulation toggled: %v", m.micActive)
+			if m.micActive {
+				m.videoInputMode = VideoInputNone
+			}
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "ctrl+shift+a": // Toggle audio input only
+		if m.enableMultimodal && m.multimodalManager != nil {
+			audioManager := m.multimodalManager.GetAudioInputManager()
+			if audioManager != nil {
+				if err := audioManager.ToggleRecording(); err != nil {
+					m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Error toggling audio input: %v", err)))
+				}
+			}
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "ctrl+shift+i": // Toggle image capture only
+		if m.enableMultimodal && m.multimodalManager != nil {
+			imageManager := m.multimodalManager.GetImageCaptureManager()
+			if imageManager != nil {
+				if err := imageManager.ToggleScreenCapture(); err != nil {
+					m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Error toggling screen capture: %v", err)))
+				}
+			}
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "ctrl+shift+s": // Capture screen now
+		if m.enableMultimodal && m.multimodalManager != nil {
+			if err := m.multimodalManager.CaptureScreenNow(); err != nil {
+				m.messages = append(m.messages, formatMessage("System", fmt.Sprintf("Error capturing screen: %v", err)))
+			} else {
+				m.messages = append(m.messages, formatMessage("System", "📷 Screen captured and sent to AI"))
+			}
 		}
 		return m, tea.Batch(cmds...) // Return early
 
