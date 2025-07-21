@@ -1,5 +1,10 @@
 # Build artifacts
 aistudio
+aistudio-*
+testlive
+testlive-*
+testscript
+live_streaming
 *~
 *.log
 aistudio-debug.log
@@ -12,4 +17,8 @@ api/testdata/
 aistudio_ui_test
 gemini-cli/
 coverage.html
+coverage.out
 coverage_new.out
+
+# Go workspace files
+go.work.sum
