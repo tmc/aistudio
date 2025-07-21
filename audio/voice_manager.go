@@ -82,7 +82,12 @@ func DefaultVoices() []*Voice {
 		{ID: "zh-CN-1", Name: "Xiaomei", DisplayName: "Xiaomei (China)", Language: "Chinese", LanguageCode: "zh-CN", Gender: "female", Age: "adult", Style: "friendly", EmotionSupport: true, NeuralQuality: true},
 		{ID: "zh-CN-2", Name: "Wei", DisplayName: "Wei (China)", Language: "Chinese", LanguageCode: "zh-CN", Gender: "male", Age: "adult", Style: "professional", EmotionSupport: true, NeuralQuality: true},
 		
-		// Add more voices to reach 30+ total...
+		// TODO: Add more voices to reach 30+ total HD voices
+		// TODO: Implement additional language variants (Hindi, Arabic, Portuguese, etc.)
+		// TODO: Add child and elderly voice options
+		// TODO: Implement voice cloning capabilities
+		// TODO: Add celebrity and character voice options
+		// TODO: Implement custom voice training support
 	}
 }
 
@@ -252,6 +257,10 @@ func (vm *VoiceManager) FindBestVoice(languageCode, gender, style string) (*Voic
 	}
 	
 	// Return the first match (could be enhanced with scoring)
+	// TODO: Implement voice scoring algorithm based on multiple factors
+	// TODO: Add user preference learning for voice selection
+	// TODO: Implement voice similarity matching
+	// TODO: Add support for voice blending/morphing
 	if len(candidates) > 0 {
 		return candidates[0], nil
 	}

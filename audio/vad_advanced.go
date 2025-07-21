@@ -61,6 +61,9 @@ type VADConfig struct {
 	UseZeroCrossing      bool
 	UseSpectralAnalysis  bool
 	UseMLModel           bool
+	// TODO: Add MLModelPath field for loading custom VAD models
+	// TODO: Add MLModelType field (tensorflow, onnx, pytorch)
+	// TODO: Add MLConfidenceThreshold for ML-based decisions
 	
 	// Smoothing
 	SmoothingWindow      int
@@ -69,6 +72,10 @@ type VADConfig struct {
 }
 
 // CustomVAD interface for pluggable VAD implementations
+// TODO: Implement WebRTC VAD wrapper as a CustomVAD
+// TODO: Implement DNN-based VAD using TensorFlow Lite
+// TODO: Implement Silero VAD integration
+// TODO: Add support for cloud-based VAD services
 type CustomVAD interface {
 	ProcessFrame(frame AudioFrame) (isSpeech bool, confidence float32)
 	UpdateNoiseProfile(frame AudioFrame)
@@ -286,6 +293,12 @@ func (vm *VADManager) calculateZeroCrossings(data []float32) int {
 func (vm *VADManager) calculateSpectralFlux(data []float32) float32 {
 	// Simplified spectral flux calculation
 	// In a real implementation, this would use FFT
+	// TODO: Implement proper FFT-based spectral analysis
+	// TODO: Add windowing functions (Hamming, Hann, Blackman)
+	// TODO: Calculate magnitude spectrum from FFT
+	// TODO: Implement proper spectral flux calculation
+	// TODO: Add spectral centroid and spread calculations
+	// TODO: Implement mel-frequency cepstral coefficients (MFCC)
 	
 	flux := float32(0)
 	for i := 1; i < len(data); i++ {
@@ -442,6 +455,12 @@ func (vm *VADManager) averageInt(values []int) int {
 // adaptThreshold adapts the threshold based on noise level
 func (vm *VADManager) adaptThreshold(currentLevel, baseThreshold float32) float32 {
 	// Simple adaptive threshold
+	// TODO: Implement proper noise estimation algorithm
+	// TODO: Add long-term and short-term noise tracking
+	// TODO: Implement minimum statistics noise estimation
+	// TODO: Add spectral subtraction for noise reduction
+	// TODO: Implement Wiener filtering for adaptive threshold
+	// TODO: Add support for multi-band adaptive thresholds
 	noiseLevel := vm.config.NoiseFloor
 	adaptedThreshold := baseThreshold + (currentLevel * 0.1)
 	

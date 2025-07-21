@@ -85,6 +85,10 @@ const (
 )
 
 // NewMCPIntegration creates a new MCP integration instance (stub)
+// TODO: Initialize MCP server instance based on config
+// TODO: Set up transport mechanisms (HTTP, WebSocket, stdio)
+// TODO: Prepare client connection pool
+// TODO: Validate configuration settings
 func NewMCPIntegration(config *MCPConfig) *MCPIntegration {
 	if config == nil {
 		config = &MCPConfig{
@@ -99,6 +103,11 @@ func NewMCPIntegration(config *MCPConfig) *MCPIntegration {
 }
 
 // Initialize starts the MCP integration (stub)
+// TODO: Implement MCP server initialization with transport setup (HTTP, WebSocket, stdio)
+// TODO: Start embedded MCP server if enabled in config
+// TODO: Connect to external MCP clients defined in config
+// TODO: Register aistudio tools with MCP server for external access
+// TODO: Import tools from external MCP servers into aistudio
 func (m *MCPIntegration) Initialize(ctx context.Context, aiStudioTools *ToolManager) error {
 	if !m.config.Enabled {
 		log.Println("MCP integration disabled")
@@ -110,27 +119,49 @@ func (m *MCPIntegration) Initialize(ctx context.Context, aiStudioTools *ToolMana
 }
 
 // SetVoiceStreamer sets the voice streamer for MCP integration (stub)
+// TODO: Register voice streaming capabilities with MCP server
+// TODO: Expose voice transcription as MCP tool if configured
+// TODO: Expose TTS capabilities as MCP tool if configured
+// TODO: Set up real-time voice streaming resources if enabled
+// TODO: Configure bidirectional voice streaming mode
 func (m *MCPIntegration) SetVoiceStreamer(vs *VoiceStreamer) {
+	// TODO: Store voice streamer reference for MCP tool exposure
 	// Stub implementation
 }
 
 // SetVideoStreamer sets the video streamer for MCP integration (stub)
+// TODO: Register video streaming capabilities with MCP server
+// TODO: Expose frame capture as MCP tool if configured
+// TODO: Expose object detection as MCP tool if configured
+// TODO: Set up live video streaming resources if enabled
+// TODO: Configure frame analysis and annotation features
 func (m *MCPIntegration) SetVideoStreamer(vs *VideoStreamer) {
+	// TODO: Store video streamer reference for MCP tool exposure
 	// Stub implementation
 }
 
 // Shutdown gracefully shuts down the MCP integration (stub)
+// TODO: Gracefully disconnect all MCP clients
+// TODO: Stop embedded MCP server if running
+// TODO: Clean up any streaming resources
+// TODO: Save state for reconnection if needed
 func (m *MCPIntegration) Shutdown(ctx context.Context) error {
 	log.Println("Shutting down MCP integration (stub)")
 	return nil
 }
 
 // GetMCPServer returns the embedded MCP server (stub)
+// TODO: Return actual MCP server instance
+// TODO: Implement proper type definition for MCP server
+// TODO: Ensure server is initialized before returning
 func (m *MCPIntegration) GetMCPServer() interface{} {
 	return nil
 }
 
 // GetMCPClients returns all connected MCP clients (stub)
+// TODO: Return map of active MCP client connections
+// TODO: Implement proper type definition for MCP clients
+// TODO: Include client status and capabilities in returned data
 func (m *MCPIntegration) GetMCPClients() map[string]interface{} {
 	return make(map[string]interface{})
 }

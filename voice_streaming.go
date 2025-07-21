@@ -436,6 +436,11 @@ func (vs *VoiceStreamer) processVoiceInput() {
 		case <-vs.ctx.Done():
 			return
 		case inputData := <-vs.inputChan:
+			// TODO: Filter input based on confidence threshold
+			// TODO: Handle partial vs complete transcriptions
+			// TODO: Apply speaker diarization if enabled
+			// TODO: Send transcribed text to the AI model via existing message system
+			// TODO: Update UI with real-time transcription feedback
 			log.Printf("Voice input: %s (confidence: %.2f)", inputData.Text, inputData.Confidence)
 			// Process the voice input and potentially send it to the model
 			// This would integrate with the existing message sending system
@@ -450,6 +455,11 @@ func (vs *VoiceStreamer) processVoiceOutput() {
 		case <-vs.ctx.Done():
 			return
 		case outputData := <-vs.outputChan:
+			// TODO: Queue text for TTS processing
+			// TODO: Handle interruption if new output arrives during playback
+			// TODO: Manage audio playback queue for smooth output
+			// TODO: Send playback status updates to UI
+			// TODO: Handle voice output errors and retry logic
 			log.Printf("Voice output: %s", outputData.Text)
 			// Process TTS and play audio
 			if err := vs.output.ProcessTTS(outputData); err != nil {
@@ -571,12 +581,20 @@ func NewVoiceProcessor(config *VoiceProcessorConfig) *VoiceProcessor {
 
 // VoiceInput methods (stubs)
 func (vi *VoiceInput) Initialize(ctx context.Context) error {
+	// TODO: Initialize microphone device with proper audio settings (sample rate, channels, bit depth)
+	// TODO: Set up speech-to-text engine connection and authenticate with provider
+	// TODO: Configure voice activity detector with sensitivity thresholds
+	// TODO: Initialize noise reduction algorithm if enabled
 	log.Println("Initializing voice input...")
 	// Initialize microphone, STT engine, etc.
 	return nil
 }
 
 func (vi *VoiceInput) Start() error {
+	// TODO: Open microphone device and verify it's available
+	// TODO: Start audio capture thread/goroutine
+	// TODO: Begin streaming audio data to speech-to-text service
+	// TODO: Set up voice activity detection monitoring
 	vi.mu.Lock()
 	defer vi.mu.Unlock()
 	vi.active = true
@@ -585,6 +603,10 @@ func (vi *VoiceInput) Start() error {
 }
 
 func (vi *VoiceInput) Stop() {
+	// TODO: Gracefully stop audio capture thread/goroutine
+	// TODO: Flush any remaining audio buffers to STT service
+	// TODO: Close connection to speech-to-text service
+	// TODO: Release microphone device resources
 	vi.mu.Lock()
 	defer vi.mu.Unlock()
 	vi.active = false
@@ -592,25 +614,44 @@ func (vi *VoiceInput) Stop() {
 }
 
 func (vi *VoiceInput) Mute() {
+	// TODO: Set flag to discard incoming audio data
+	// TODO: Optionally pause audio capture to save resources
+	// TODO: Notify STT service that input is temporarily muted
 	log.Println("Voice input muted")
 }
 
 func (vi *VoiceInput) Unmute() {
+	// TODO: Clear mute flag to resume processing audio data
+	// TODO: Resume audio capture if it was paused
+	// TODO: Notify STT service that input has resumed
 	log.Println("Voice input unmuted")
 }
 
 func (vi *VoiceInput) Shutdown() {
+	// TODO: Stop all active audio capture operations
+	// TODO: Close all connections to external services
+	// TODO: Release all allocated resources (buffers, handles, etc.)
+	// TODO: Clean up any temporary files or cached data
 	log.Println("Voice input shutdown")
 }
 
 // VoiceOutput methods (stubs)
 func (vo *VoiceOutput) Initialize(ctx context.Context) error {
+	// TODO: Connect to text-to-speech service and authenticate
+	// TODO: Load available voices and verify selected voice exists
+	// TODO: Initialize audio output device for playback
+	// TODO: Set up audio effects processor if enabled
+	// TODO: Configure spatial audio renderer if enabled
 	log.Println("Initializing voice output...")
 	// Initialize TTS engine, audio effects, etc.
 	return nil
 }
 
 func (vo *VoiceOutput) Start() error {
+	// TODO: Open audio output device for playback
+	// TODO: Start TTS processing thread/goroutine
+	// TODO: Initialize audio playback queue
+	// TODO: Set up streaming mode if enabled for low-latency output
 	vo.mu.Lock()
 	defer vo.mu.Unlock()
 	vo.active = true
@@ -619,6 +660,10 @@ func (vo *VoiceOutput) Start() error {
 }
 
 func (vo *VoiceOutput) Stop() {
+	// TODO: Stop any ongoing TTS synthesis
+	// TODO: Flush audio playback queue
+	// TODO: Gracefully stop audio output
+	// TODO: Close audio output device
 	vo.mu.Lock()
 	defer vo.mu.Unlock()
 	vo.active = false
@@ -626,31 +671,57 @@ func (vo *VoiceOutput) Stop() {
 }
 
 func (vo *VoiceOutput) ProcessTTS(data VoiceOutputData) error {
+	// TODO: Send text to TTS service with voice parameters
+	// TODO: Receive audio data stream from TTS service
+	// TODO: Apply audio effects if configured (reverb, pitch shift, etc.)
+	// TODO: Apply spatial audio processing if enabled
+	// TODO: Queue audio for playback through output device
+	// TODO: Handle streaming mode for real-time synthesis
 	log.Printf("Processing TTS for: %s", data.Text)
 	// Convert text to speech and play
 	return nil
 }
 
 func (vo *VoiceOutput) SetVolume(volume float64) {
+	// TODO: Update volume level for audio output device
+	// TODO: Apply volume change to currently playing audio
+	// TODO: Store volume setting for future audio playback
 	log.Printf("Setting voice output volume to %.2f", volume)
 }
 
 func (vo *VoiceOutput) SetVoice(voice string) {
+	// TODO: Validate that the voice exists in available voices
+	// TODO: Update TTS configuration with new voice selection
+	// TODO: Clear any voice-specific cached data
+	// TODO: Update voice cloner settings if using custom voice
 	log.Printf("Setting voice to: %s", voice)
 }
 
 func (vo *VoiceOutput) Shutdown() {
+	// TODO: Stop all active TTS synthesis operations
+	// TODO: Close connection to TTS service
+	// TODO: Release audio output device
+	// TODO: Clean up audio effects and spatial audio resources
 	log.Println("Voice output shutdown")
 }
 
 // VoiceProcessor methods (stubs)
 func (vp *VoiceProcessor) Initialize(ctx context.Context) error {
+	// TODO: Initialize audio buffer with configured size
+	// TODO: Set up real-time STT processor for streaming recognition
+	// TODO: Configure streaming TTS processor for low-latency synthesis
+	// TODO: Initialize latency manager with target latency
+	// TODO: Set up adaptive quality mode if enabled
 	log.Println("Initializing voice processor...")
 	// Initialize real-time processors, buffers, etc.
 	return nil
 }
 
 func (vp *VoiceProcessor) Shutdown() {
+	// TODO: Stop all real-time processing threads
+	// TODO: Flush and deallocate audio buffers
+	// TODO: Clean up STT and TTS processor resources
+	// TODO: Save latency statistics for analysis
 	log.Println("Voice processor shutdown")
 }
 
@@ -778,6 +849,11 @@ func NewVideoStreamer(config *VideoConfig) *VideoStreamer {
 
 // StartCamera starts camera streaming
 func (vs *VideoStreamer) StartCamera() error {
+	// TODO: Enumerate available camera devices
+	// TODO: Open selected camera with configured resolution and FPS
+	// TODO: Verify camera supports requested settings
+	// TODO: Start frame capture thread/goroutine
+	// TODO: Initialize video analysis if enabled
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -794,6 +870,11 @@ func (vs *VideoStreamer) StartCamera() error {
 
 // StartScreenCapture starts screen capture streaming
 func (vs *VideoStreamer) StartScreenCapture() error {
+	// TODO: Get list of available displays/windows
+	// TODO: Request screen capture permissions if needed
+	// TODO: Initialize screen capture with resolution and FPS
+	// TODO: Set up frame compression for efficiency
+	// TODO: Start capture thread/goroutine
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -810,6 +891,11 @@ func (vs *VideoStreamer) StartScreenCapture() error {
 
 // Stop ends video streaming
 func (vs *VideoStreamer) Stop() error {
+	// TODO: Stop frame capture threads gracefully
+	// TODO: Close camera device if active
+	// TODO: Stop screen capture if active
+	// TODO: Flush any remaining frames in queue
+	// TODO: Clean up video analysis resources
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -827,6 +913,11 @@ func (vs *VideoStreamer) Stop() error {
 
 // Shutdown gracefully shuts down the video streaming system
 func (vs *VideoStreamer) Shutdown(ctx context.Context) error {
+	// TODO: Stop all active streaming operations
+	// TODO: Release camera and screen capture resources
+	// TODO: Close all frame processing channels
+	// TODO: Clean up video analyzer state
+	// TODO: Save any pending analysis results
 	log.Println("Shutting down video streaming...")
 	vs.Stop()
 	vs.cancel()

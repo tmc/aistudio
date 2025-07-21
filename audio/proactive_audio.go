@@ -254,6 +254,11 @@ func (pam *ProactiveAudioManager) analyzeRelevance(input AudioInput) RelevanceRe
 
 // calculateRelevanceScore computes a relevance score for the input
 func (pam *ProactiveAudioManager) calculateRelevanceScore(input AudioInput) float32 {
+	// TODO: Implement machine learning-based relevance scoring
+	// TODO: Add natural language understanding for intent detection
+	// TODO: Implement context-aware scoring based on conversation history
+	// TODO: Add support for multi-modal relevance (audio + visual cues)
+	// TODO: Implement user preference learning for personalized relevance
 	score := float32(0.0)
 	transcript := strings.ToLower(input.Transcript)
 	
