@@ -3,7 +3,11 @@ package aistudio
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/ai/generativelanguage/apiv1beta/generativelanguagepb"
@@ -271,6 +275,99 @@ type Model struct {
 
 	// Experimental integrations moved to .wip files
 	// TODO: Re-enable when stabilized
+}
+
+// Close properly shuts down all connections, contexts, and goroutines
+// to prevent hanging processes when the application exits.
+func (m *Model) Close() error {
+	var errs []error
+
+	log.Println("Model.Close(): Starting graceful shutdown")
+
+	// Cancel all contexts to signal goroutines to stop
+	if m.rootCtxCancel != nil {
+		log.Println("Model.Close(): Canceling root context")
+		m.rootCtxCancel()
+		m.rootCtxCancel = nil
+	}
+
+	if m.streamCtxCancel != nil {
+		log.Println("Model.Close(): Canceling stream context")
+		m.streamCtxCancel()
+		m.streamCtxCancel = nil
+	}
+
+	// Close all gRPC streams properly
+	if m.bidiStream != nil {
+		log.Println("Model.Close(): Closing bidirectional stream")
+		if err := m.bidiStream.CloseSend(); err != nil && !isConnectionClosedError(err) {
+			log.Printf("Model.Close(): Error closing bidi stream: %v", err)
+			errs = append(errs, fmt.Errorf("failed to close bidirectional stream: %w", err))
+		}
+		m.bidiStream = nil
+	}
+
+	if m.stream != nil {
+		log.Println("Model.Close(): Closing unidirectional stream")
+		if err := m.stream.CloseSend(); err != nil && !isConnectionClosedError(err) {
+			log.Printf("Model.Close(): Error closing stream: %v", err)
+			errs = append(errs, fmt.Errorf("failed to close stream: %w", err))
+		}
+		m.stream = nil
+	}
+
+	// Close the underlying gRPC client connections
+	if m.client != nil {
+		log.Println("Model.Close(): Closing API client")
+		if err := m.client.Close(); err != nil {
+			log.Printf("Model.Close(): Error closing client: %v", err)
+			errs = append(errs, fmt.Errorf("failed to close API client: %w", err))
+		}
+	}
+
+	// Close multimodal streaming manager if exists
+	if m.multimodalManager != nil {
+		log.Println("Model.Close(): Stopping multimodal streaming")
+		if err := m.multimodalManager.StopStreaming(); err != nil {
+			log.Printf("Model.Close(): Error stopping multimodal streaming: %v", err)
+			errs = append(errs, fmt.Errorf("failed to stop multimodal streaming: %w", err))
+		}
+	}
+
+	// Close audio channels
+	if m.audioChannel != nil {
+		log.Println("Model.Close(): Closing audio channel")
+		close(m.audioChannel)
+		m.audioChannel = nil
+	}
+
+	if m.uiUpdateChan != nil {
+		log.Println("Model.Close(): Closing UI update channel")
+		close(m.uiUpdateChan)
+		m.uiUpdateChan = nil
+	}
+
+	log.Println("Model.Close(): Graceful shutdown completed")
+
+	// Return combined error if any occurred
+	if len(errs) > 0 {
+		return fmt.Errorf("multiple close errors: %v", errs)
+	}
+
+	return nil
+}
+
+// isConnectionClosedError checks if an error is related to an already closed connection
+func isConnectionClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "transport is closing") ||
+		strings.Contains(errStr, "connection is closing") ||
+		strings.Contains(errStr, "use of closed network connection") ||
+		strings.Contains(errStr, "EOF") ||
+		errors.Is(err, io.EOF)
 }
 
 // Option defines a functional option for configuring the Model.
