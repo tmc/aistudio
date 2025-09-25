@@ -182,6 +182,7 @@ func (m *Model) initStreamCmd() tea.Cmd {
 		}
 
 		// Initialize client with timeout monitoring
+		log.Printf("[DEBUG] About to call m.client.InitClient for model: %s", m.modelName)
 		initStart := time.Now()
 		err := m.client.InitClient(m.streamCtx)
 		if err != nil {
@@ -198,21 +199,41 @@ func (m *Model) initStreamCmd() tea.Cmd {
 
 		// Initialize client stream with timeout monitoring
 		streamStart := time.Now()
-		stream, err := m.client.InitBidiStream(m.streamCtx, &clientConfig)
-		if err != nil {
-			streamElapsed := time.Since(streamStart)
-			log.Printf("[ERROR] Stream initialization failed after %v: %v", streamElapsed, err)
-			// Check if it was a timeout
-			if m.streamCtx.Err() == context.DeadlineExceeded {
-				log.Printf("[ERROR] Stream initialization timed out - this indicates gRPC/WebSocket connectivity issues")
+
+		// Choose the appropriate streaming method based on model capabilities
+		if m.useBidi {
+			log.Printf("[DEBUG] Using bidirectional streaming for model: %s", m.modelName)
+			stream, err := m.client.InitBidiStream(m.streamCtx, &clientConfig)
+			if err != nil {
+				streamElapsed := time.Since(streamStart)
+				log.Printf("[ERROR] Bidirectional stream initialization failed after %v: %v", streamElapsed, err)
+				// Check if it was a timeout
+				if m.streamCtx.Err() == context.DeadlineExceeded {
+					log.Printf("[ERROR] Stream initialization timed out - this indicates gRPC/WebSocket connectivity issues")
+				}
+				return initErrorMsg{err: fmt.Errorf("bidi stream init failed: %w", err)}
 			}
-			return initErrorMsg{err: fmt.Errorf("stream init failed: %w", err)}
+			m.bidiStream = stream // Store the bidirectional connection
+			m.stream = nil        // Clear regular stream
+		} else {
+			log.Printf("[DEBUG] Using regular streaming for model: %s", m.modelName)
+			stream, err := m.client.InitStreamGenerateContent(m.streamCtx, &clientConfig)
+			if err != nil {
+				streamElapsed := time.Since(streamStart)
+				log.Printf("[ERROR] Regular stream initialization failed after %v: %v", streamElapsed, err)
+				// Check if it was a timeout
+				if m.streamCtx.Err() == context.DeadlineExceeded {
+					log.Printf("[ERROR] Stream initialization timed out - this indicates gRPC connectivity issues")
+				}
+				return initErrorMsg{err: fmt.Errorf("stream init failed: %w", err)}
+			}
+			m.stream = stream     // Store the regular connection
+			m.bidiStream = nil    // Clear bidirectional stream
 		}
 
 		streamElapsed := time.Since(streamStart)
 		totalElapsed := time.Since(start)
 		log.Printf("[DEBUG] Stream initialized successfully in %v (total: %v)", streamElapsed, totalElapsed)
-		m.bidiStream = stream // Store the connection
 
 		// Start connection health monitoring if debug is enabled
 		if os.Getenv(EnvDebugConnection) == "true" {
@@ -220,6 +241,7 @@ func (m *Model) initStreamCmd() tea.Cmd {
 		}
 
 		// Start receiving from the stream
+		log.Printf("[DEBUG] About to send initClientCompleteMsg - bidiStream: %v, stream: %v", m.bidiStream != nil, m.stream != nil)
 		return initClientCompleteMsg{}
 	}
 }
@@ -259,18 +281,21 @@ func (m *Model) receiveStreamCmd() tea.Cmd {
 // receiveBidiStreamCmd returns a command that receives messages from a stream.
 func (m *Model) receiveBidiStreamCmd() tea.Cmd {
 	return func() tea.Msg {
+		log.Printf("[DEBUG] receiveBidiStreamCmd: Starting receive attempt")
+
 		// Double-check we have a valid stream and context before attempting to receive
 		if m.bidiStream == nil {
-			log.Println("receiveBidiStreamCmd: Bidi stream is nil")
+			log.Println("[ERROR] receiveBidiStreamCmd: Bidi stream is nil")
 			return streamClosedMsg{}
 		}
 
 		// If the stream context has been canceled, don't attempt to receive
 		if m.streamCtx == nil || m.streamCtx.Err() != nil {
-			log.Printf("Stream context canceled or nil before receiving, aborting receive")
+			log.Printf("[ERROR] Stream context canceled or nil before receiving, aborting receive")
 			return streamClosedMsg{}
 		}
 
+		log.Printf("[DEBUG] receiveBidiStreamCmd: About to call bidiStream.Recv() on stream %p", m.bidiStream)
 		resp, err := m.bidiStream.Recv()
 		if err != nil {
 			errStr := err.Error()
@@ -632,8 +657,15 @@ func (m *Model) closeStreamCmd() tea.Cmd {
 // closeBidiStreamCmd returns a command that closes a stream.
 func (m *Model) closeBidiStreamCmd() tea.Cmd {
 	return func() tea.Msg {
-		log.Println("Closing stream and canceling context")
-		m.bidiStream = nil
+		log.Println("Closing bidirectional stream and canceling context")
+
+		// Properly close the stream before setting it to nil
+		if m.bidiStream != nil {
+			if err := m.bidiStream.CloseSend(); err != nil && !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "transport is closing") {
+				log.Printf("Error during CloseSend for bidi stream: %v", err)
+			}
+			m.bidiStream = nil
+		}
 
 		// Cancel the context
 		if m.streamCtxCancel != nil {
