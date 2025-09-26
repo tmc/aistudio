@@ -1,11 +1,8 @@
 package integration
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"

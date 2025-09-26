@@ -77,6 +77,8 @@ func WithVertexAILocation(location string) Option {
 func WithModel(name string) Option {
 	return func(m *Model) error {
 		m.modelName = name
+		// Note: All models use bidirectional streaming since it's the only type supported
+		// Audio features are controlled separately via WithAudioOutput option
 		return nil
 	}
 }
@@ -516,6 +518,14 @@ func WithAutoSend(delay string) Option {
 
 		m.autoSendDelay = duration
 		m.autoSendEnabled = true
+		return nil
+	}
+}
+
+// WithBidiStreaming enables or disables bidirectional streaming mode.
+func WithBidiStreaming(enabled bool) Option {
+	return func(m *Model) error {
+		m.useBidi = enabled
 		return nil
 	}
 }

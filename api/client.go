@@ -329,7 +329,11 @@ func (c *Client) InitGeminiClient(ctx context.Context) error {
 
 // InitClient initializes the Google Cloud Generative Language client with the specified API version.
 func (c *Client) InitClient(ctx context.Context) error {
+	log.Printf("[DEBUG] InitClient called - starting Gemini API client initialization")
+	log.Printf("[DEBUG] API Version: %s, APIKey length: %d", c.GeminiVersion, len(c.APIKey))
+
 	if ctx == nil {
+		log.Printf("[ERROR] InitClient: context is nil")
 		return fmt.Errorf("context cannot be nil")
 	}
 
@@ -393,7 +397,7 @@ func (c *Client) InitClient(ctx context.Context) error {
 		option.WithGRPCDialOption(grpc.WithKeepaliveParams(kacp)),
 		option.WithGRPCDialOption(grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff:           backoff.DefaultConfig,
-			MinConnectTimeout: 20 * time.Second,
+			MinConnectTimeout: 5 * time.Second,  // Reduced from 20s to allow faster timeouts
 		})),
 	)
 
@@ -492,7 +496,10 @@ func (c *Client) InitStreamGenerateContent(ctx context.Context, config *StreamCl
 // InitBidiStream starts a bidirectional streaming session using StreamGenerateContent.
 // Returns a StreamGenerateContent interface for compatibility with existing code.
 func (c *Client) InitBidiStream(ctx context.Context, config *StreamClientConfig) (generativelanguagepb.GenerativeService_StreamGenerateContentClient, error) {
+	log.Printf("[DEBUG] InitBidiStream called for model: %s", config.ModelName)
+
 	if ctx == nil {
+		log.Printf("[ERROR] InitBidiStream: context is nil")
 		return nil, fmt.Errorf("context cannot be nil")
 	}
 
@@ -576,8 +583,8 @@ func (c *Client) InitBidiStream(ctx context.Context, config *StreamClientConfig)
 		genConfig.MaxOutputTokens = &config.MaxOutputTokens
 	}
 
-	// Only set voice config if VoiceName is specified
-	if config.VoiceName != "" {
+	// Only set voice config if both VoiceName is specified AND EnableAudio is true
+	if config.VoiceName != "" && config.EnableAudio {
 		genConfig.SpeechConfig = &generativelanguagepb.SpeechConfig{
 			VoiceConfig: &generativelanguagepb.VoiceConfig{
 				VoiceConfig: &generativelanguagepb.VoiceConfig_PrebuiltVoiceConfig{
@@ -638,12 +645,16 @@ func (c *Client) InitBidiStream(ctx context.Context, config *StreamClientConfig)
 	}
 
 	// Start the stream with the initial message
+	log.Printf("[DEBUG] About to call GenerativeClient.StreamGenerateContent for model: %s", config.ModelName)
+	log.Printf("[DEBUG] Request: ModelName=%s, Contents=%d parts", request.Model, len(request.Contents))
+
 	stream, err := c.GenerativeClient.StreamGenerateContent(ctx, request)
 	if err != nil {
+		log.Printf("[ERROR] StreamGenerateContent failed: %v", err)
 		return nil, fmt.Errorf("failed to start stream: %w", err)
 	}
 
-	log.Printf("Stream established successfully.")
+	log.Printf("[SUCCESS] Stream established successfully for model: %s", config.ModelName)
 	return stream, nil
 }
 
@@ -728,8 +739,8 @@ func (c *Client) initBidiStreamAlpha(ctx context.Context, config *StreamClientCo
 		alphaGenConfig.MaxOutputTokens = &config.MaxOutputTokens
 	}
 
-	// Only set voice config if VoiceName is specified (for v1alpha)
-	if config.VoiceName != "" {
+	// Only set voice config if both VoiceName is specified AND EnableAudio is true (for v1alpha)
+	if config.VoiceName != "" && config.EnableAudio {
 		alphaGenConfig.SpeechConfig = &generativelanguagealphapb.SpeechConfig{
 			VoiceConfig: &generativelanguagealphapb.VoiceConfig{
 				VoiceConfig: &generativelanguagealphapb.VoiceConfig_PrebuiltVoiceConfig{
@@ -771,12 +782,16 @@ func (c *Client) initBidiStreamAlpha(ctx context.Context, config *StreamClientCo
 	}
 
 	// Start the stream with the initial message (v1alpha)
+	log.Printf("[DEBUG] About to call GenerativeClientAlpha.StreamGenerateContent for model: %s", config.ModelName)
+	log.Printf("[DEBUG] Alpha Request: ModelName=%s, Contents=%d parts", alphaRequest.Model, len(alphaRequest.Contents))
+
 	stream, err := c.GenerativeClientAlpha.StreamGenerateContent(ctx, alphaRequest)
 	if err != nil {
+		log.Printf("[ERROR] Alpha StreamGenerateContent failed: %v", err)
 		return nil, fmt.Errorf("failed to start v1alpha stream: %w", err)
 	}
 
-	log.Printf("v1alpha stream established successfully.")
+	log.Printf("[SUCCESS] v1alpha stream established successfully for model: %s", config.ModelName)
 	return alphaToStandardStreamAdapter{stream: stream}, nil
 }
 

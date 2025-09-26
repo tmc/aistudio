@@ -272,7 +272,7 @@ func (pam *ProactiveAudioManager) calculateRelevanceScore(input AudioInput) floa
 		}
 	}
 	if keywordCount > 0 {
-		score += math.Min(float64(keywordScore), 0.6)
+		score += float32(math.Min(float64(keywordScore), 0.6))
 	}
 	
 	// Check for question patterns

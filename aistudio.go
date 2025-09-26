@@ -99,7 +99,7 @@ func New(opts ...Option) *Model {
 		logMessages:            []string{},                 // Initialize empty log messages
 		maxLogMessages:         10,                         // Default to storing 10 log messages
 		showLogMessages:        false,                      // Default log messages display off
-		useBidi:                true,                       // Default to using BidiGenerateContent
+		useBidi:                true,                       // Must use bidi (only streaming type supported)
 		width:                  width,                      // Initialize width
 		height:                 height,                     // Initialize height
 		audioChannel:           make(chan AudioChunk, 100), // Buffer for up to 100 audio chunks
@@ -1001,6 +1001,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentState = AppStateQuitting
 		log.Println("Ctrl+C pressed, entering Quitting state.")
 
+		// Immediately cancel contexts to stop hanging goroutines
+		if m.rootCtxCancel != nil {
+			log.Println("Ctrl+C: Canceling root context immediately")
+			m.rootCtxCancel()
+		}
+
+		if m.streamCtxCancel != nil {
+			log.Println("Ctrl+C: Canceling stream context immediately")
+			m.streamCtxCancel()
+		}
+
 		// Shutdown streams
 		if m.stream != nil {
 			cmds = append(cmds, m.closeStreamCmd())
@@ -1421,6 +1432,37 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// UI will update automatically
 		cmds = append(cmds, m.initStreamCmd()) // Start connection attempt
 
+	case initClientCompleteMsg: // stream.go - Client initialization complete
+		log.Println("Client initialization complete, transitioning to ready state")
+		m.currentState = AppStateReady // Transition state from Initializing to Ready
+		m.err = nil
+
+		// Remove "Connecting..." message if present
+		if len(m.messages) > 0 && strings.Contains(m.messages[len(m.messages)-1].Content, "Connecting") {
+			m.messages = m.messages[:len(m.messages)-1]
+		}
+
+		// Add success message
+		m.messages = append(m.messages, formatMessage("System", "Connected. You can start chatting."))
+		if m.enableTools && m.toolManager != nil {
+			m.messages = append(m.messages, formatMessage("Info", fmt.Sprintf("%v tools available.", len(m.toolManager.RegisteredToolDefs))))
+		}
+
+		// Reset retry state
+		m.streamRetryAttempt = 0
+		m.currentStreamBackoff = initialBackoffDuration
+
+		// Start receiving messages from the appropriate stream
+		if m.bidiStream != nil {
+			log.Printf("[DEBUG] Starting bidirectional stream receive loop (bidiStream: %p)", m.bidiStream)
+			cmds = append(cmds, m.receiveBidiStreamCmd())
+		} else if m.stream != nil {
+			log.Printf("[DEBUG] Starting regular stream receive loop (stream: %p)", m.stream)
+			cmds = append(cmds, m.receiveStreamCmd())
+		} else {
+			log.Println("[ERROR] No stream available after initialization - this should not happen!")
+		}
+
 	case streamReadyMsg: // stream.go
 		m.stream = msg.stream
 		m.currentState = AppStateReady // Transition state
@@ -1760,8 +1802,14 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 						log.Printf("[AUDIO_PIPE] Created new message #%d for incoming bidi stream data", targetMsgIdx)
 					}
 				} else if !createNeeded && msg.output.Text != "" {
-					// Append text to existing message
-					m.messages[targetMsgIdx].Content += msg.output.Text
+					// For streaming, append text. For complete messages (TurnComplete), replace
+					if msg.output.TurnComplete {
+						// Replace the entire text for complete messages to avoid duplication
+						m.messages[targetMsgIdx].Content = msg.output.Text
+					} else {
+						// Append for streaming updates
+						m.messages[targetMsgIdx].Content += msg.output.Text
+					}
 					m.messages[targetMsgIdx].Timestamp = time.Now()
 
 					if helpers.IsAudioTraceEnabled() {
@@ -1881,7 +1929,11 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			errorCategory = "invalid argument"
 			// Don't retry API argument errors - they won't resolve with retries
 			shouldRetry = false
-		case strings.Contains(errString, "RESOURCE_EXHAUSTED"):
+		case strings.Contains(errString, "NotFound"):
+			errorCategory = "model not found"
+			// Don't retry model not found errors - they won't resolve with retries
+			shouldRetry = false
+		case strings.Contains(errString, "RESOURCE_EXHAUSTED") || strings.Contains(errString, "ResourceExhausted") || strings.Contains(errString, "quota"):
 			errorCategory = "resource exhausted"
 			// Don't retry resource exhaustion errors immediately
 			shouldRetry = false

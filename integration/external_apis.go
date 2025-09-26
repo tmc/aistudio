@@ -16,7 +16,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gorilla/websocket"
-	"github.com/tmc/aistudio/api"
 )
 
 // ExternalAPIManager manages external API integrations during live streaming
@@ -666,9 +665,15 @@ func (eam *ExternalAPIManager) ConnectWebSocket(endpointID string, headers map[s
 	if err := eam.addWebSocketAuth(headers, endpoint); err != nil {
 		return nil, fmt.Errorf("failed to add WebSocket authentication: %w", err)
 	}
-	
+
+	// Convert headers map to http.Header
+	httpHeaders := make(http.Header)
+	for key, value := range headers {
+		httpHeaders.Set(key, value)
+	}
+
 	// Connect
-	conn, _, err := dialer.Dial(endpoint.BaseURL, http.Header(headers))
+	conn, _, err := dialer.Dial(endpoint.BaseURL, httpHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}

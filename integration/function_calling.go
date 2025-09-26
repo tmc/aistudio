@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/ai/generativelanguage/apiv1beta/generativelanguagepb"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
