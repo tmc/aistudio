@@ -1,6 +1,11 @@
-# aistudio - Enhanced AI Interface with MCP, Voice & Video
+# AIStudio v1.0.0 - Production-Ready AI Terminal Interface
 
-This application provides a comprehensive terminal-based interface for AI interactions, featuring:
+[![Build Status](https://github.com/tmc/aistudio/workflows/CI/badge.svg)](https://github.com/tmc/aistudio/actions)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tmc/aistudio)](https://goreportcard.com/report/github.com/tmc/aistudio)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Docker Pulls](https://img.shields.io/docker/pulls/tmc/aistudio)](https://hub.docker.com/r/tmc/aistudio)
+
+**🚀 Now Production Ready!** A comprehensive terminal-based interface for AI interactions, featuring:
 
 - **Real-time streaming** with Google's Gemini Live API
 - **MCP (Model Context Protocol)** integration for tool sharing and interoperability
