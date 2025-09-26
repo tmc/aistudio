@@ -37,7 +37,6 @@ func setupLogging() *os.File {
 
 func main() {
 	// [DEBUG] Main function started
-	fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Starting aistudio main() function\n")
 
 	// --- Command Line Flags ---
 	modelFlag := flag.String("model", aistudio.DefaultModel, "Model ID to use.")
@@ -152,9 +151,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "                  # Then visit http://localhost:6060/debug/pprof/\n")
 	}
 
-	fmt.Fprintf(os.Stderr, "[DEBUG MAIN] About to parse command line flags\n")
 	flag.Parse()
-	fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Command line flags parsed successfully\n")
 
 	// --- Set up logging first ---
 	logFile := setupLogging()
@@ -533,12 +530,9 @@ func main() {
 	// Ensure proper cleanup on exit by adding a defer to close connections
 	defer func() {
 		if component != nil {
-			fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Closing component connections...\n")
 			if err := component.Close(); err != nil {
 				log.Printf("Error closing component: %v", err)
-				fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Error during cleanup: %v\n", err)
 			} else {
-				fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Component cleanup completed successfully\n")
 			}
 		}
 	}()
@@ -561,18 +555,14 @@ func main() {
 		}
 	} else {
 		// Normal TUI mode
-		fmt.Fprintf(os.Stderr, "[DEBUG MAIN] About to initialize model component\n")
 		model, err := component.InitModel()
 		if err != nil {
 			log.Printf("Failed to initialize model: %v", err)
-			fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Error initializing model: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Model component initialized successfully\n")
 
 		// --- Run Bubble Tea Program ---
 		// Use options that help with input focus and program behavior
-		fmt.Fprintf(os.Stderr, "[DEBUG MAIN] About to create Bubble Tea program\n")
 		p := tea.NewProgram(
 			model,
 			tea.WithAltScreen(),
@@ -580,11 +570,9 @@ func main() {
 		)
 
 		log.Println("Starting Bubble Tea program...")
-		fmt.Fprintf(os.Stderr, "[DEBUG MAIN] About to run Bubble Tea program\n")
 
 		// Run the program
 		result, err := p.Run()
-		fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Bubble Tea program finished running\n")
 		if err != nil {
 			log.Printf("Error running program: %v", err)
 			fmt.Fprintf(os.Stderr, "Error running program: %v\n", err)
@@ -595,10 +583,8 @@ func main() {
 		if model, ok := result.(*aistudio.Model); ok && model.ExitCode() != 0 {
 			exitCode := model.ExitCode()
 			log.Printf("Program requested exit with code: %d", exitCode)
-			fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Exiting with code: %d\n", exitCode)
 			os.Exit(exitCode)
 		}
-		fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Normal completion, about to exit main function\n")
 	}
 
 	// Write memory profile at exit if requested
@@ -621,5 +607,4 @@ func main() {
 	}
 
 	log.Println("--- Application End ---")
-	fmt.Fprintf(os.Stderr, "[DEBUG MAIN] Reached end of main function, should exit now\n")
 }

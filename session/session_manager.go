@@ -258,7 +258,7 @@ type StorageProvider interface {
 	SaveSession(session *Session) error
 	LoadSession(sessionID string) (*Session, error)
 	DeleteSession(sessionID string) error
-	ListSessions(userID string) ([]Session, error)
+	ListSessions(userID string) ([]*Session, error)
 	BackupSession(sessionID string) error
 	RestoreSession(sessionID string, backupID string) error
 }
@@ -506,7 +506,7 @@ func (sm *SessionManager) DeleteSession(sessionID string) error {
 }
 
 // ListSessions lists all sessions for a user
-func (sm *SessionManager) ListSessions(userID string) ([]Session, error) {
+func (sm *SessionManager) ListSessions(userID string) ([]*Session, error) {
 	return sm.storageProvider.ListSessions(userID)
 }
 
