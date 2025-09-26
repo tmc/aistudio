@@ -51,7 +51,7 @@ type APIClientConfig struct {
 
 	// Model settings
 	ModelName       string
-	ToolDefinitions []ToolDefinition
+	ToolDefinitions []*ToolDefinition
 
 	// HTTP configuration
 	HTTPTransport http.RoundTripper
@@ -117,7 +117,7 @@ type StreamClientConfig struct {
 	// Display options
 	DisplayTokenCounts bool // Whether to display token counts in the UI
 
-	ToolDefinitions []ToolDefinition // Tool definitions for the session
+	ToolDefinitions []*ToolDefinition // Tool definitions for the session
 }
 
 // StreamOutput holds the processed output from a stream response chunk.
@@ -547,8 +547,7 @@ func (c *Client) InitBidiStream(ctx context.Context, config *StreamClientConfig)
 	// Set up tools if defined
 	var fns []*generativelanguagepb.FunctionDeclaration
 	if config.ToolDefinitions != nil {
-		for i := range config.ToolDefinitions {
-			td := &config.ToolDefinitions[i]
+		for _, td := range config.ToolDefinitions {
 			fns = append(fns, td)
 		}
 	}
@@ -712,9 +711,9 @@ func (c *Client) initBidiStreamAlpha(ctx context.Context, config *StreamClientCo
 	// Set up tools if defined for v1alpha
 	var fns []*generativelanguagealphapb.FunctionDeclaration
 	if config.ToolDefinitions != nil {
-		for i := range config.ToolDefinitions {
+		for _, td := range config.ToolDefinitions {
 			// Convert v1beta ToolDefinition to v1alpha
-			alphaFn := convertToAlphaFunctionDeclaration(&config.ToolDefinitions[i])
+			alphaFn := convertToAlphaFunctionDeclaration(td)
 			fns = append(fns, &alphaFn)
 		}
 	}

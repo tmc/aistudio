@@ -133,10 +133,10 @@ func (m *Model) initStreamCmd() tea.Cmd {
 			// Convert registered tools to the format expected by the client config
 			var apiToolDefs []*api.ToolDefinition
 			for name := range m.toolManager.RegisteredTools {
-				if m.toolManager.RegisteredTools[name].IsAvailable {
+				registeredTool := m.toolManager.RegisteredTools[name]
+				if registeredTool.IsAvailable {
 					log.Printf("Adding tool definition for API: %s", name)
-					toolDef := m.toolManager.RegisteredTools[name].ToolDefinition
-					apiToolDefs = append(apiToolDefs, &toolDef)
+					apiToolDefs = append(apiToolDefs, &registeredTool.ToolDefinition)
 				}
 			}
 			clientConfig.ToolDefinitions = m.toolManager.RegisteredToolDefs[:]
@@ -574,10 +574,10 @@ func (m *Model) sendToBidiStreamCmd(text string) tea.Cmd {
 		if m.enableTools && m.toolManager != nil {
 			var apiToolDefs []*api.ToolDefinition
 			for name := range m.toolManager.RegisteredTools {
-				if m.toolManager.RegisteredTools[name].IsAvailable {
+				registeredTool := m.toolManager.RegisteredTools[name]
+				if registeredTool.IsAvailable {
 					log.Printf("Adding tool definition for API: %s", name)
-					toolDef := m.toolManager.RegisteredTools[name].ToolDefinition
-					apiToolDefs = append(apiToolDefs, &toolDef)
+					apiToolDefs = append(apiToolDefs, &registeredTool.ToolDefinition)
 				}
 			}
 			clientConfig.ToolDefinitions = m.toolManager.RegisteredToolDefs[:]

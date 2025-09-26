@@ -243,10 +243,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	var (
-		cmd  tea.Cmd
-		cmds []tea.Cmd
-	)
+	var cmds []tea.Cmd
 
 	// Handle audio playback ticker for progress updates
 	if m.tickerRunning && m.showAudioStatus && m.currentAudio != nil {
@@ -454,20 +451,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle stream-related messages
 		return m.handleStreamMsg(msg)
 	}
-
-	// Textarea updates are handled in handleKeyMsg to avoid double processing
-
-	// Update viewport
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
-
-	// Handle settings panel update if showing
-	if m.showSettingsPanel && m.settingsPanel != nil {
-		*m.settingsPanel, cmd = m.settingsPanel.Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
-	return m, tea.Batch(cmds...)
 }
 
 // Init implements the BubbleTea model interface
@@ -739,8 +722,8 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 					} else if len(results) > 0 {
 						// Convert ToolResult slice to []*generativelanguagepb.FunctionResponse
 						var fnResults []*generativelanguagepb.FunctionResponse
-						for i := range results {
-							fnResults = append(fnResults, (*generativelanguagepb.FunctionResponse)(&results[i]))
+						for _, result := range results {
+							fnResults = append(fnResults, (*generativelanguagepb.FunctionResponse)(result))
 						}
 
 						// Send function responses back to model
@@ -895,8 +878,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 					// Handle unexpected multiple results if necessary
 					log.Printf("Warning: Expected 1 result for tool call %s, got %d", approvedCall.Name, len(results))
-					for i := range results {
-						res := &results[i]
+					for _, res := range results {
 						m.messages = append(m.messages, formatToolResultMessage(res.Id, res.Name, res.Response, ToolCallStatusUnknown))
 					}
 				}
@@ -948,8 +930,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 					// Handle unexpected multiple results if necessary
 					log.Printf("Warning: Expected 1 result for tool call %s, got %d", approvedCall.Name, len(results))
-					for i := range results {
-						res := &results[i]
+					for _, res := range results {
 						m.messages = append(m.messages, formatToolResultMessage(res.Id, res.Name, res.Response, ToolCallStatusUnknown))
 					}
 				}
@@ -1811,8 +1792,7 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.currentState = AppStateReady // Revert state on error
 					} else if len(results) > 0 {
 						// Add formatted messages for the results
-						for i := range results {
-							res := &results[i]
+						for _, res := range results {
 							m.messages = append(m.messages, formatToolResultMessage(res.Id, res.Name, res.Response, ToolCallStatusCompleted))
 						}
 						// Send tool results back to model (this should be a command)

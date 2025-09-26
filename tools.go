@@ -40,7 +40,7 @@ type ToolResponse = api.ToolResponse
 type ToolManager struct {
 	// RegisteredTools holds all available tools that can be called
 	RegisteredTools    map[string]api.RegisteredTool
-	RegisteredToolDefs []ToolDefinition // Store the tool definitions for reference
+	RegisteredToolDefs []*api.ToolDefinition // Store the tool definitions for reference
 }
 
 type ToolCallStatus string
@@ -139,7 +139,7 @@ type toolCallSentMsg struct{}
 
 // Message for tool call results
 type toolCallResultMsg struct {
-	results   []ToolResponse     // Each response includes its tool call ID in the Id field
+	results   []*ToolResponse    // Each response includes its tool call ID in the Id field
 	call      ToolCall           // The original tool call (for additional context if needed)
 	viewModel *ToolCallViewModel // The view model for UI rendering
 }
@@ -376,16 +376,18 @@ func (tm *ToolManager) RegisterTool(name, description string, parameters json.Ra
 		Handler:     handler,
 		IsAvailable: true,
 	}
-	tm.RegisteredToolDefs = append(tm.RegisteredToolDefs, tm.RegisteredTools[name].ToolDefinition)
+	registeredTool := tm.RegisteredTools[name]
+	tm.RegisteredToolDefs = append(tm.RegisteredToolDefs, &registeredTool.ToolDefinition)
 	return nil
 }
 
 // GetAvailableTools returns the definitions of all available tools
-func (tm *ToolManager) GetAvailableTools() []api.ToolDefinition {
-	var availableTools []api.ToolDefinition
-	for _, tool := range tm.RegisteredTools {
-		if tool.IsAvailable {
-			availableTools = append(availableTools, tool.ToolDefinition)
+func (tm *ToolManager) GetAvailableTools() []*api.ToolDefinition {
+	var availableTools []*api.ToolDefinition
+	for name := range tm.RegisteredTools {
+		registeredTool := tm.RegisteredTools[name]
+		if registeredTool.IsAvailable {
+			availableTools = append(availableTools, &registeredTool.ToolDefinition)
 		}
 	}
 	return availableTools
@@ -398,8 +400,8 @@ func (tm *ToolManager) GetToolCount() int {
 	}
 
 	count := 0
-	for _, tool := range tm.RegisteredTools {
-		if tool.IsAvailable {
+	for name := range tm.RegisteredTools {
+		if tm.RegisteredTools[name].IsAvailable {
 			count++
 		}
 	}
@@ -407,7 +409,7 @@ func (tm *ToolManager) GetToolCount() int {
 }
 
 // processToolCalls processes tool calls from the model and returns the results
-func (m *Model) processToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
+func (m *Model) processToolCalls(toolCalls []ToolCall) ([]*ToolResponse, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
@@ -433,7 +435,7 @@ func (m *Model) processToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 		}
 
 		// Execute auto-approved calls immediately
-		var results []ToolResponse
+		var results []*ToolResponse
 		var err error
 		if len(autoApprovedCalls) > 0 {
 			results, err = m.executeToolCalls(autoApprovedCalls)
@@ -505,7 +507,7 @@ func StripANSI(str string) string {
 }
 
 // executeToolCalls prepares tool calls and returns a command to execute them asynchronously
-func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
+func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]*ToolResponse, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
@@ -583,7 +585,7 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 				})
 
 				m.uiUpdateChan <- toolCallResultMsg{
-					results: []ToolResponse{result},
+					results: []*ToolResponse{&result},
 					call:    call,
 				}
 				cancel()
@@ -605,7 +607,7 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 				})
 
 				m.uiUpdateChan <- toolCallResultMsg{
-					results: []ToolResponse{result},
+					results: []*ToolResponse{&result},
 					call:    call,
 				}
 				cancel()
@@ -632,7 +634,7 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 
 			// Send the result through the channel
 			m.uiUpdateChan <- toolCallResultMsg{
-				results:   []ToolResponse{result},
+				results:   []*ToolResponse{&result},
 				call:      call,
 				viewModel: updatedVM,
 			}
@@ -647,7 +649,7 @@ func (m *Model) executeToolCalls(toolCalls []ToolCall) ([]ToolResponse, error) {
 }
 
 // sendToolResultsCmd creates a command that sends tool results back to the model
-func (m *Model) sendToolResultsCmd(results []ToolResponse) tea.Cmd {
+func (m *Model) sendToolResultsCmd(results []*ToolResponse) tea.Cmd {
 	return func() tea.Msg {
 		if m.bidiStream == nil {
 			log.Println("sendToolResultsCmd: Bidi stream is nil, cannot send tool results")
@@ -664,7 +666,7 @@ func (m *Model) sendToolResultsCmd(results []ToolResponse) tea.Cmd {
 
 		var fnResps []*generativelanguagepb.FunctionResponse
 		for _, result := range results {
-			fnResps = append(fnResps, (*generativelanguagepb.FunctionResponse)(&result))
+			fnResps = append(fnResps, (*generativelanguagepb.FunctionResponse)(result))
 		}
 		// Send to existing bidirectional stream using the API client
 		err = m.client.SendToolResultsToBidiStream(m.bidiStream, fnResps...)
@@ -742,7 +744,8 @@ func (tm *ToolManager) ListAvailableTools() string {
 	var sb strings.Builder
 	sb.WriteString("Available Tools:\n\n")
 
-	for name, tool := range tm.RegisteredTools {
+	for name := range tm.RegisteredTools {
+		tool := tm.RegisteredTools[name]
 		if !tool.IsAvailable {
 			continue
 		}
