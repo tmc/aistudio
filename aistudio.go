@@ -49,13 +49,14 @@ func New(opts ...Option) *Model {
 	}
 
 	ta := textarea.New()
-	ta.Placeholder = "Type something and press Enter..."
+	ta.Placeholder = "Type a message and press Enter to send (Alt+Enter for new line)..."
 	ta.Focus()
 	ta.Prompt = "┃ "
 	ta.CharLimit = 0
 	ta.SetWidth(50) // Will be updated by WindowSizeMsg
-	ta.SetHeight(1)
+	ta.SetHeight(3)  // Allow 3 lines for multi-line input
 	ta.ShowLineNumbers = false
+	// Keep newline disabled since we handle it manually with Alt+Enter
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 
 	// Create a viewport that fills most of the screen
@@ -221,8 +222,8 @@ func (m *Model) InitModel() (tea.Model, error) {
 		// List the names of available tools
 		if toolCount > 0 {
 			toolNames := []string{}
-			for name, tool := range m.toolManager.RegisteredTools {
-				if tool.IsAvailable {
+			for name := range m.toolManager.RegisteredTools {
+				if m.toolManager.RegisteredTools[name].IsAvailable {
 					toolNames = append(toolNames, name)
 				}
 			}
@@ -270,7 +271,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle window resizing
 		m.width = msg.Width
 		m.height = msg.Height
-		m.viewport.Height = msg.Height - 8 // Reserve space for input and status
+		m.viewport.Height = msg.Height - 10 // Reserve more space for multi-line input and status
 		m.viewport.Width = msg.Width
 		m.textarea.SetWidth(msg.Width)
 
@@ -308,6 +309,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle audio playback errors
 		m.tickerRunning = false
 		m.messages = append(m.messages, formatError(fmt.Errorf("audio error: %v", msg.err)))
+		return m, nil
+
+	case spinner.TickMsg:
+		// Handle spinner updates - only continue ticking if we're in an initializing state
+		if m.currentState == AppStateInitializing {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		// Don't continue ticking if not initializing
 		return m, nil
 
 	case func() tea.Msg:
@@ -456,9 +467,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	// Listen for more UI updates
-	cmds = append(cmds, m.listenForUIUpdatesCmd())
-
 	return m, tea.Batch(cmds...)
 }
 
@@ -527,8 +535,8 @@ func (m *Model) Init() tea.Cmd {
 		// List the names of available tools
 		if toolCount > 0 {
 			toolNames := []string{}
-			for name, tool := range m.toolManager.RegisteredTools {
-				if tool.IsAvailable {
+			for name := range m.toolManager.RegisteredTools {
+				if m.toolManager.RegisteredTools[name].IsAvailable {
 					toolNames = append(toolNames, name)
 				}
 			}
@@ -563,8 +571,21 @@ func (m *Model) Init() tea.Cmd {
 	// Start with ready state
 	//m.currentState = AppStateReady
 
-	cmds = append(cmds, m.setupInitialUICmd())
-	cmds = append(cmds, m.initStreamCmd())
+	if uiCmd := m.setupInitialUICmd(); uiCmd != nil {
+		cmds = append(cmds, uiCmd)
+	} else {
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+			}
+		}()
+		if streamCmd := m.initStreamCmd(); streamCmd != nil {
+			cmds = append(cmds, streamCmd)
+		} else {
+		}
+	}()
 
 	return tea.Batch(cmds...)
 }
@@ -611,14 +632,14 @@ func (m *Model) ProcessStdinMode(ctx context.Context) error {
 	}
 	m.client.APIKey = m.apiKey
 
-	// Create root context with timeout if specified or use the provided context
+	// Create root context with timeout - use shorter timeout for stdin mode
 	if ctx == nil {
+		timeoutDuration := 30 * time.Second // Default 30s timeout for stdin mode
 		if m.globalTimeout > 0 {
-			m.rootCtx, m.rootCtxCancel = context.WithTimeout(context.Background(), m.globalTimeout)
-			log.Printf("Global timeout set to %s", m.globalTimeout)
-		} else {
-			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
+			timeoutDuration = m.globalTimeout
 		}
+		m.rootCtx, m.rootCtxCancel = context.WithTimeout(context.Background(), timeoutDuration)
+		log.Printf("Stdin mode timeout set to %s", timeoutDuration)
 	} else {
 		m.rootCtx = ctx
 	}
@@ -776,6 +797,7 @@ func playbackTickCmd() tea.Cmd {
 func (m *Model) listenForUIUpdatesCmd() tea.Cmd {
 	return func() tea.Msg {
 		// Blocks until a message is available on the channel
+		// This is fine because it runs in its own goroutine
 		msg := <-m.uiUpdateChan
 		return msg
 	}
@@ -788,8 +810,12 @@ func (m *Model) setupInitialUICmd() tea.Cmd {
 	m.textarea.Focus()
 
 	cmds := []tea.Cmd{
-		m.spinner.Tick,
 		m.listenForUIUpdatesCmd(), // Starts listening for background messages
+	}
+
+	// Start spinner only if we're in initializing state
+	if m.currentState == AppStateInitializing {
+		cmds = append(cmds, m.spinner.Tick)
 	}
 
 	// Start the audio processor goroutine if audio is enabled
@@ -869,7 +895,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 					// Handle unexpected multiple results if necessary
 					log.Printf("Warning: Expected 1 result for tool call %s, got %d", approvedCall.Name, len(results))
-					for _, res := range results {
+					for i := range results {
+						res := &results[i]
 						m.messages = append(m.messages, formatToolResultMessage(res.Id, res.Name, res.Response, ToolCallStatusUnknown))
 					}
 				}
@@ -921,7 +948,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 					// Handle unexpected multiple results if necessary
 					log.Printf("Warning: Expected 1 result for tool call %s, got %d", approvedCall.Name, len(results))
-					for _, res := range results {
+					for i := range results {
+						res := &results[i]
 						m.messages = append(m.messages, formatToolResultMessage(res.Id, res.Name, res.Response, ToolCallStatusUnknown))
 					}
 				}
@@ -1081,6 +1109,48 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.focusedComponent = "input"
 				m.textarea.Focus()
 				m.settingsPanel.Blur()
+			}
+		} else {
+			// Regular tab navigation between input and viewport
+			if m.focusedComponent == "input" {
+				m.focusedComponent = "viewport"
+				m.textarea.Blur()
+			} else {
+				m.focusedComponent = "input"
+				m.textarea.Focus()
+			}
+		}
+		return m, tea.Batch(cmds...) // Return early
+
+	case "shift+tab":
+		// Handle reverse tab navigation between tool calls in approval mode
+		if m.showToolApproval && len(m.pendingToolCalls) > 1 && m.approvalIndex > 0 {
+			// Move to the previous tool call
+			m.approvalIndex--
+
+			// UI will update automatically
+			return m, tea.Batch(cmds...)
+		}
+
+		// Handle reverse tab navigation between components
+		if m.showSettingsPanel {
+			if m.focusedComponent == "settings" {
+				m.focusedComponent = "input"
+				m.textarea.Focus()
+				m.settingsPanel.Blur()
+			} else if m.focusedComponent == "input" {
+				m.focusedComponent = "settings"
+				m.settingsPanel.Focus()
+				m.textarea.Blur()
+			}
+		} else {
+			// Regular reverse tab navigation between viewport and input
+			if m.focusedComponent == "viewport" {
+				m.focusedComponent = "input"
+				m.textarea.Focus()
+			} else {
+				m.focusedComponent = "viewport"
+				m.textarea.Blur()
 			}
 		}
 		return m, tea.Batch(cmds...) // Return early
@@ -1332,6 +1402,48 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// UI will update automatically
 		return m, tea.Batch(cmds...)
 
+	case "alt+enter", "shift+enter": // Add newline for multi-line input
+		m.textarea.InsertString("\n")
+		return m, nil
+
+	case "up": // Scroll up in viewport or navigate history
+		if m.focusedComponent == "viewport" {
+			m.viewport.LineUp(1)
+		} else {
+			// Let textarea handle cursor movement
+			var textareaCmd tea.Cmd
+			m.textarea, textareaCmd = m.textarea.Update(msg)
+			cmds = append(cmds, textareaCmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case "down": // Scroll down in viewport
+		if m.focusedComponent == "viewport" {
+			m.viewport.LineDown(1)
+		} else {
+			// Let textarea handle cursor movement
+			var textareaCmd tea.Cmd
+			m.textarea, textareaCmd = m.textarea.Update(msg)
+			cmds = append(cmds, textareaCmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case "pgup": // Page up in viewport
+		m.viewport.HalfViewUp()
+		return m, nil
+
+	case "pgdn": // Page down in viewport
+		m.viewport.HalfViewDown()
+		return m, nil
+
+	case "home": // Go to top of viewport
+		m.viewport.GotoTop()
+		return m, nil
+
+	case "end": // Go to bottom of viewport
+		m.viewport.GotoBottom()
+		return m, nil
+
 	case "enter": // Send message
 		if txt := strings.TrimSpace(m.textarea.Value()); txt != "" {
 			log.Printf("Sending message: %s", txt)
@@ -1367,7 +1479,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// }
 		return m, tea.Batch(cmds...)
 	default:
-		// If no specific key was handled, return the model and any accumulated commands (e.g., from textarea update)
+		// Pass the key to the textarea for handling (allows typing, cursor movement, etc.)
+		var textareaCmd tea.Cmd
+		m.textarea, textareaCmd = m.textarea.Update(msg)
+		cmds = append(cmds, textareaCmd)
 		return m, tea.Batch(cmds...)
 	}
 	return m, tea.Batch(cmds...)
@@ -1696,7 +1811,8 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.currentState = AppStateReady // Revert state on error
 					} else if len(results) > 0 {
 						// Add formatted messages for the results
-						for _, res := range results {
+						for i := range results {
+							res := &results[i]
 							m.messages = append(m.messages, formatToolResultMessage(res.Id, res.Name, res.Response, ToolCallStatusCompleted))
 						}
 						// Send tool results back to model (this should be a command)
@@ -2036,6 +2152,36 @@ func (m *Model) handleStreamMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Tick(delay, func(t time.Time) tea.Msg {
 				return initStreamMsg{} // Trigger reconnection attempt
 			}))
+		}
+
+	case initErrorMsg: // stream.go - Handle initialization errors
+		log.Printf("Stream initialization error: %v", msg.err)
+
+		// Check if it's a timeout
+		errString := msg.err.Error()
+		var errorMessage string
+
+		if strings.Contains(errString, "deadline exceeded") || strings.Contains(errString, "timeout") {
+			errorMessage = fmt.Sprintf("Connection timed out. The model may be unavailable or there may be network issues.\n\nError: %v\n\nTry:\n• Checking your API key\n• Using a different model\n• Disabling features like audio if the model doesn't support them", msg.err)
+		} else if strings.Contains(errString, "only bidi streaming is supported") {
+			errorMessage = fmt.Sprintf("This model requires bidirectional streaming which is timing out.\n\nError: %v\n\nThe connection to the model cannot be established.", msg.err)
+		} else {
+			errorMessage = fmt.Sprintf("Failed to initialize streaming connection.\n\nError: %v", msg.err)
+		}
+
+		m.currentState = AppStateError
+		m.err = msg.err
+		m.messages = append(m.messages, formatMessage("System", errorMessage))
+		m.viewport.GotoBottom()
+
+		// Exit with non-zero code for initial connection failures
+		if len(m.messages) <= 2 {
+			log.Printf("Failed to establish initial connection. Exiting with error code 1")
+			fmt.Fprintf(os.Stderr, "Error: Failed to initialize stream: %v\n", msg.err)
+			m.exitCode = 1
+			cmds = append(cmds, func() tea.Msg {
+				return tea.Quit()
+			})
 		}
 
 	case streamClosedMsg: // stream.go

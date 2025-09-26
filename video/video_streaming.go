@@ -945,7 +945,7 @@ func (vsm *VideoStreamingManager) GetStreamingStats() VideoStreamingStats {
 		FramesDropped:     vsm.droppedFrames,
 		AvgProcessingTime: vsm.avgProcessTime,
 		NetworkMetrics:    vsm.networkMetrics,
-		PerformanceMetrics: *vsm.performanceMonitor,
+		PerformanceMetrics: vsm.performanceMonitor,
 	}
 }
 
@@ -1040,7 +1040,7 @@ type VideoStreamingStats struct {
 	FramesDropped      int64
 	AvgProcessingTime  time.Duration
 	NetworkMetrics     NetworkMetrics
-	PerformanceMetrics PerformanceMonitor
+	PerformanceMetrics *PerformanceMonitor
 }
 
 // Helper functions

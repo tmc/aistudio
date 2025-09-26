@@ -158,13 +158,13 @@ func (fsp *FileStorageProvider) DeleteSession(sessionID string) error {
 }
 
 // ListSessions lists all sessions for a user
-func (fsp *FileStorageProvider) ListSessions(userID string) ([]Session, error) {
+func (fsp *FileStorageProvider) ListSessions(userID string) ([]*Session, error) {
 	fsp.mutex.RLock()
 	defer fsp.mutex.RUnlock()
 	
 	userDir := filepath.Join(fsp.baseDir, userID)
 	if _, err := os.Stat(userDir); os.IsNotExist(err) {
-		return []Session{}, nil
+		return []*Session{}, nil
 	}
 	
 	files, err := os.ReadDir(userDir)
@@ -172,7 +172,7 @@ func (fsp *FileStorageProvider) ListSessions(userID string) ([]Session, error) {
 		return nil, fmt.Errorf("failed to read user directory: %v", err)
 	}
 	
-	sessions := make([]Session, 0)
+	sessions := make([]*Session, 0)
 	for _, file := range files {
 		if file.IsDir() || strings.HasPrefix(file.Name(), ".") {
 			continue
@@ -198,7 +198,7 @@ func (fsp *FileStorageProvider) ListSessions(userID string) ([]Session, error) {
 			continue
 		}
 		
-		sessions = append(sessions, *session)
+		sessions = append(sessions, session)
 	}
 	
 	return sessions, nil
@@ -444,12 +444,8 @@ func (msp *MemoryStorageProvider) SaveSession(session *Session) error {
 	msp.mutex.Lock()
 	defer msp.mutex.Unlock()
 	
-	// Create a deep copy to avoid issues with concurrent access
-	sessionCopy := *session
-	sessionCopy.Messages = make([]SessionMessage, len(session.Messages))
-	copy(sessionCopy.Messages, session.Messages)
-	
-	msp.sessions[session.ID] = &sessionCopy
+	// Store the session pointer directly
+	msp.sessions[session.ID] = session
 	return nil
 }
 
@@ -463,12 +459,8 @@ func (msp *MemoryStorageProvider) LoadSession(sessionID string) (*Session, error
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 	
-	// Create a deep copy
-	sessionCopy := *session
-	sessionCopy.Messages = make([]SessionMessage, len(session.Messages))
-	copy(sessionCopy.Messages, session.Messages)
-	
-	return &sessionCopy, nil
+	// Return the session pointer directly
+	return session, nil
 }
 
 // DeleteSession deletes a session from memory
@@ -481,17 +473,14 @@ func (msp *MemoryStorageProvider) DeleteSession(sessionID string) error {
 }
 
 // ListSessions lists all sessions for a user
-func (msp *MemoryStorageProvider) ListSessions(userID string) ([]Session, error) {
+func (msp *MemoryStorageProvider) ListSessions(userID string) ([]*Session, error) {
 	msp.mutex.RLock()
 	defer msp.mutex.RUnlock()
 	
-	sessions := make([]Session, 0)
+	sessions := make([]*Session, 0)
 	for _, session := range msp.sessions {
 		if session.UserID == userID {
-			sessionCopy := *session
-			sessionCopy.Messages = make([]SessionMessage, len(session.Messages))
-			copy(sessionCopy.Messages, session.Messages)
-			sessions = append(sessions, sessionCopy)
+			sessions = append(sessions, session)
 		}
 	}
 	

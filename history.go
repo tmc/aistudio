@@ -182,8 +182,7 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 				msgCopy.ToolCall = &toolCallCopy
 			}
 			if msg.ToolResponse != nil {
-				toolResponseCopy := *msg.ToolResponse
-				msgCopy.ToolResponse = &toolResponseCopy
+				msgCopy.ToolResponse = msg.ToolResponse
 			}
 			if msg.ExecutableCode != nil {
 				execCodeCopy := *msg.ExecutableCode
@@ -230,8 +229,7 @@ func (m *Model) loadMessagesFromSession(session *ChatSession) {
 			messageCopy.ToolCall = &toolCallCopy
 		}
 		if msg.ToolResponse != nil {
-			toolResponseCopy := *msg.ToolResponse
-			messageCopy.ToolResponse = &toolResponseCopy
+			messageCopy.ToolResponse = msg.ToolResponse
 		}
 		if msg.ExecutableCode != nil {
 			execCodeCopy := *msg.ExecutableCode

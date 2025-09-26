@@ -81,18 +81,15 @@ func formatExecutableCodeResultMessage(execResult *generativelanguagepb.CodeExec
 // initStreamCmd returns a command that initializes a stream.
 func (m *Model) initStreamCmd() tea.Cmd {
 	return func() tea.Msg {
-		log.Println("initStreamCmd: Starting connection attempt")
-
+		log.Println("[DEBUG] initStreamCmd: Starting connection attempt")
 		// Reuse the root context if it exists, otherwise create a new one
 		if m.rootCtx == nil {
-			log.Println("Warning: Root context is nil, creating new background context")
 			m.rootCtx, m.rootCtxCancel = context.WithCancel(context.Background())
 		}
 
 		// Always create a fresh stream context for each connection attempt
 		// This ensures we don't reuse potentially problematic contexts
 		if m.streamCtxCancel != nil {
-			log.Println("[DEBUG] Canceling previous stream context")
 			m.streamCtxCancel()
 			m.streamCtx = nil
 			m.streamCtxCancel = nil
@@ -101,7 +98,7 @@ func (m *Model) initStreamCmd() tea.Cmd {
 		}
 
 		// Create a new context with timeout to prevent hanging connections
-		connectionTimeout := DefaultConnectionTimeout
+		connectionTimeout := 60 * time.Second // Longer timeout for bidirectional streaming
 		if timeoutStr := os.Getenv(EnvConnectionTimeout); timeoutStr != "" {
 			if parsedTimeout, err := strconv.Atoi(timeoutStr); err == nil {
 				connectionTimeout = time.Duration(parsedTimeout) * time.Second
@@ -110,7 +107,6 @@ func (m *Model) initStreamCmd() tea.Cmd {
 		}
 
 		m.streamCtx, m.streamCtxCancel = context.WithTimeout(m.rootCtx, connectionTimeout)
-		log.Printf("[DEBUG] Created stream context with timeout: %v", connectionTimeout)
 
 		// Initialize the client configuration
 		clientConfig := api.StreamClientConfig{
@@ -136,11 +132,11 @@ func (m *Model) initStreamCmd() tea.Cmd {
 
 			// Convert registered tools to the format expected by the client config
 			var apiToolDefs []*api.ToolDefinition
-			for name, registeredTool := range m.toolManager.RegisteredTools {
-				if registeredTool.IsAvailable {
+			for name := range m.toolManager.RegisteredTools {
+				if m.toolManager.RegisteredTools[name].IsAvailable {
 					log.Printf("Adding tool definition for API: %s", name)
-					defCopy := registeredTool.ToolDefinition
-					apiToolDefs = append(apiToolDefs, &defCopy)
+					toolDef := m.toolManager.RegisteredTools[name].ToolDefinition
+					apiToolDefs = append(apiToolDefs, &toolDef)
 				}
 			}
 			clientConfig.ToolDefinitions = m.toolManager.RegisteredToolDefs[:]
@@ -577,11 +573,11 @@ func (m *Model) sendToBidiStreamCmd(text string) tea.Cmd {
 
 		if m.enableTools && m.toolManager != nil {
 			var apiToolDefs []*api.ToolDefinition
-			for name, registeredTool := range m.toolManager.RegisteredTools {
-				if registeredTool.IsAvailable {
+			for name := range m.toolManager.RegisteredTools {
+				if m.toolManager.RegisteredTools[name].IsAvailable {
 					log.Printf("Adding tool definition for API: %s", name)
-					defCopy := registeredTool.ToolDefinition
-					apiToolDefs = append(apiToolDefs, &defCopy)
+					toolDef := m.toolManager.RegisteredTools[name].ToolDefinition
+					apiToolDefs = append(apiToolDefs, &toolDef)
 				}
 			}
 			clientConfig.ToolDefinitions = m.toolManager.RegisteredToolDefs[:]

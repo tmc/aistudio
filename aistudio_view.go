@@ -145,7 +145,7 @@ func (m *Model) renderStatusLine() string {
 // renderHelpText returns the help text for keyboard shortcuts
 func (m *Model) renderHelpText() string {
 	// Build help text for available keyboard shortcuts
-	helpParts := []string{"Enter: Send", "Tab: Navigate", "↑/↓: Scroll", "PgUp/PgDn: Page", "Ctrl+C: Quit"}
+	helpParts := []string{"Enter: Send", "Alt+Enter: New Line", "Tab: Switch Focus", "Shift+Tab: Reverse Focus", "↑/↓: Scroll", "PgUp/PgDn: Page", "Ctrl+C: Quit"}
 
 	if m.historyEnabled {
 		helpParts = append(helpParts, "Ctrl+H: Save History")
