@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  aistudio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aistudio:latest
+    container_name: aistudio
+    environment:
+      # API Configuration - set your API key here or use .env file
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
+      # Optional: Vertex AI configuration
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - GOOGLE_CLOUD_REGION=${GOOGLE_CLOUD_REGION:-us-central1}
+
+      # Application settings
+      - AISTUDIO_MODEL=${AISTUDIO_MODEL:-gemini-2.0-flash-latest}
+      - AISTUDIO_ENABLE_TOOLS=${AISTUDIO_ENABLE_TOOLS:-true}
+      - AISTUDIO_ENABLE_HISTORY=${AISTUDIO_ENABLE_HISTORY:-true}
+      - AISTUDIO_REQUIRE_APPROVAL=${AISTUDIO_REQUIRE_APPROVAL:-true}
+
+      # Terminal settings
+      - TERM=xterm-256color
+      - COLUMNS=120
+      - LINES=40
+
+    volumes:
+      # Persist history
+      - aistudio_history:/home/aistudio/.aistudio/history
+
+      # Optional: Mount local config
+      - ./config.yaml:/home/aistudio/.aistudio/config.yaml:ro
+
+      # Optional: Mount tools definitions
+      - ./tools:/home/aistudio/tools:ro
+
+    # For interactive mode
+    stdin_open: true
+    tty: true
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Network
+    networks:
+      - aistudio_net
+
+  # Optional: Development version with hot reload
+  aistudio-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: aistudio:dev
+    container_name: aistudio-dev
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - AISTUDIO_DEBUG=${AISTUDIO_DEBUG:-true}
+    volumes:
+      - .:/workspace:cached
+      - aistudio_dev_cache:/go/pkg/mod
+    stdin_open: true
+    tty: true
+    command: ["go", "run", "./cmd/aistudio"]
+    networks:
+      - aistudio_net
+    profiles:
+      - dev
+
+volumes:
+  aistudio_history:
+    driver: local
+  aistudio_dev_cache:
+    driver: local
+
+networks:
+  aistudio_net:
+    driver: bridge
