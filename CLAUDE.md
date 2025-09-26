@@ -1,6 +1,127 @@
-# Tool Rendering Improvements
+# AIStudio Development Guide
 
-This document summarizes the improvements made to the tool call rendering system in aistudio.
+## Testing with it2 (iTerm2 CLI)
+
+### Useful it2 Commands for Testing AIStudio
+
+The `it2` tool is excellent for automated testing of terminal applications like aistudio. Here are the most useful commands:
+
+#### Creating Test Sessions
+```bash
+# Split current session horizontally
+it2 session split "$ITERM_SESSION_ID" --horizontal --profile "Default"
+
+# Split current session vertically
+it2 session split "$ITERM_SESSION_ID" --vertical --profile "Default"
+
+# The split command returns the new session ID for use in subsequent commands
+```
+
+#### Sending Commands to Sessions
+```bash
+# Send text to a specific session
+it2 session send-text "SESSION_ID" "command to run"
+
+# Send special keys
+it2 session send-key "SESSION_ID" enter
+it2 session send-key "SESSION_ID" ctrl-c
+it2 session send-key "SESSION_ID" tab
+it2 session send-key "SESSION_ID" escape
+```
+
+#### Monitoring Session Output
+```bash
+# Get current screen content - ALWAYS use this to verify state
+it2 text get-screen "SESSION_ID"
+
+# Get last N lines of output
+it2 text get-screen "SESSION_ID" | tail -20
+
+# Search for specific text in output
+it2 text get-screen "SESSION_ID" | grep "search term"
+```
+
+#### Session Management
+```bash
+# List all sessions with details
+it2 session list --format json
+
+# Close a session
+it2 session close "SESSION_ID"
+
+# Get session info
+it2 session get-info "SESSION_ID"
+```
+
+### Testing AIStudio Workflow Example
+
+```bash
+# 1. Create a new test pane
+NEW_SESSION=$(it2 session split "$ITERM_SESSION_ID" --horizontal --profile "Default" | grep -o '[A-F0-9-]*$')
+
+# 2. Launch aistudio with a test message
+it2 session send-text "$NEW_SESSION" "aistudio -auto-send 3s 'Test question'"
+
+# 3. Wait and check the output
+sleep 5
+it2 text get-screen "$NEW_SESSION" | tail -30
+
+# 4. Send additional input
+it2 session send-text "$NEW_SESSION" "Follow-up message"
+it2 session send-key "$NEW_SESSION" enter
+
+# 5. Monitor response
+sleep 3
+it2 text get-screen "$NEW_SESSION"
+
+# 6. Clean up
+it2 session send-key "$NEW_SESSION" ctrl-c
+it2 session close "$NEW_SESSION"
+```
+
+### Best Practices for it2 Testing
+
+1. **Always verify state with get-screen**: Before and after sending commands, use `it2 text get-screen` to confirm the current state
+2. **Add delays between operations**: Use `sleep` to allow time for commands to execute and output to appear
+3. **Check session existence**: Sessions may close unexpectedly, always verify with `it2 session list`
+4. **Use explicit session IDs**: Don't rely on environment variables that may not be available in all contexts
+5. **Clean up test sessions**: Always close test sessions when done to avoid clutter
+
+### Common Testing Patterns
+
+#### Testing Interactive Mode
+```bash
+# Start aistudio in interactive mode
+it2 session send-text "$SESSION" "aistudio"
+sleep 3  # Wait for initialization
+
+# Send a message
+it2 session send-text "$SESSION" "Your message here"
+it2 session send-key "$SESSION" enter
+
+# Check response
+sleep 5
+it2 text get-screen "$SESSION"
+```
+
+#### Testing with Different Models
+```bash
+# Test with specific model
+it2 session send-text "$SESSION" "aistudio -model 'gemini-2.5-flash'"
+
+# Test model listing
+it2 session send-text "$SESSION" "aistudio -list-models"
+```
+
+#### Testing stdin Mode
+```bash
+# Test stdin mode with pipe
+it2 session send-text "$SESSION" "echo 'Test input' | aistudio --stdin"
+```
+
+## Tool Rendering Improvements
+
+This document also summarizes the improvements made to the tool call rendering system in aistudio.
 
 ## Key Changes Implemented
 
